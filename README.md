@@ -1,5 +1,7 @@
+# 🚀 fasTTalk  
+### *Real-Time Speech-to-FLAME Animation*
 
-# fasTTalk - Instalation
+## Instalation - Bash Script
 
 Run: 
 
@@ -8,8 +10,15 @@ chmod +x install_env.sh
 bash install_env.sh
 ```
 
-or follow these steps to set up the `fasttalk` environment with the required packages:
+## Run Gradio App
 
+Run: 
+
+```bash
+python gradio_app.py
+```
+
+## Instalation - Manual
 
 ### Step 1: Create and Activate Conda Environment
 
