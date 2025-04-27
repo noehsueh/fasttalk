@@ -1,14 +1,14 @@
 
 # fasTTalk - Instalation
 
-
 Run: 
 
 ```bash
-sh ./install_env.sh
+chmod +x install_env.sh
+bash install_env.sh
 ```
 
-or follow these steps to set up the `fasttalk` environment with the required packages.
+or follow these steps to set up the `fasttalk` environment with the required packages:
 
 
 ### Step 1: Create and Activate Conda Environment
