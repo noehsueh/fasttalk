@@ -1,4 +1,4 @@
-# fasT⚡⚡Talk  
+# ⚡ fasTTalk  
 ### *Real-Time Speech-to-FLAME Animation*
 
 ## Instalation - Bash Script
