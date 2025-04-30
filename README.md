@@ -18,6 +18,10 @@ Run:
 python gradio_app.py
 ```
 
+## Checkpoints
+
+Model checkpoints can be downloaded from [HERE](https://drive.google.com/file/d/1B8JJGtFPSr3YUlkvxDzkxxABab_T9JCH/view?usp=sharing). Unzip the file inside the project's root directory.
+
 ## Instalation - Manual
 
 ### Step 1: Create and Activate Conda Environment
