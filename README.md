@@ -1,5 +1,5 @@
 # ⚡ fasTTalk  
-### *Real-Time Speech-to-FLAME Animation*
+### *Speech-to-FLAME Animation at interactive rates*
 
 ## Instalation - Bash Script
 
