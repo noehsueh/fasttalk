@@ -20,7 +20,7 @@ python gradio_app.py
 
 ## Checkpoints
 
-Model checkpoints can be downloaded from [HERE](https://drive.google.com/file/d/1B8JJGtFPSr3YUlkvxDzkxxABab_T9JCH/view?usp=sharing). Unzip the file inside the project's root directory.
+Model checkpoints can be downloaded from [HERE](https://drive.google.com/file/d/1B8JJGtFPSr3YUlkvxDzkxxABab_T9JCH/view?usp=sharing). Unzip the file inside the `flame` directory.
 
 ## Instalation - Manual
 
@@ -32,6 +32,7 @@ conda activate fasttalk
 ```
 
 After creating the enviroment, please download and unzip [FLAME2023](https://drive.google.com/file/d/1xKqhqhlozyExenBs9ew7scEjPgrLe-Io/view?usp=sharing) inside an `assets` folder. 
+
 
 ### Step 2: Install Dependencies
 

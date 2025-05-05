@@ -33,13 +33,13 @@ PREDICTOR:
   device: cuda
   period: 25
   vqvae_pretrained_path: /root/Projects/fasttalk/checkpoints/s1_model.pth.tar
-  wav2vec2model_path: facebook/wav2vec2-large-xlsr-53   #utter-project/mHuBERT-147
+  wav2vec2model_path: facebook/wav2vec2-large-xlsr-53 
   teacher_forcing: True
   num_layers: 6
   n_head: 4 
 
 DEMO:
-  model_path: /root/Projects/fasttalk/checkpoints/s2_model.pth.tar #/root/Projects/fasttalk/logs/multi/neck_s2/model_100/model.pth.tar
+  model_path: /root/Projects/fasttalk/checkpoints/s2_model.pth.tar 
   condition: English
   subject: id
   demo_wav_dir_path: demo/input/

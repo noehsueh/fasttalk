@@ -87,12 +87,12 @@ pip install --upgrade gradio
 
 ###############################################################################
 # 4. FLAME2023 assets
-ASSETS_DIR="$PWD/assets"
-FLAME_ZIP="$ASSETS_DIR/FLAME2023.zip"
+FLAME_DIR="$PWD/flame"
+FLAME_ZIP="$FLAME_DIR/FLAME2023.zip"
 FLAME_URL="https://drive.google.com/uc?export=download&id=1xKqhqhlozyExenBs9ew7scEjPgrLe-Io"
 
-mkdir -p "$ASSETS_DIR"
-if [[ ! -d "$ASSETS_DIR/FLAME2023" ]]; then
+mkdir -p "$FLAME_DIR"
+if [[ ! -d "$FLAME_DIR/assets" ]]; then
     log "Downloading FLAME2023 assets (≈150 MB)…"
     python - <<'PY'
 import importlib.util, subprocess, sys
@@ -100,11 +100,11 @@ if importlib.util.find_spec("gdown") is None:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "gdown"])
 PY
     gdown "$FLAME_URL" -O "$FLAME_ZIP"
-    log "Unzipping FLAME2023…"
-    unzip -q "$FLAME_ZIP" -d "$ASSETS_DIR"
+    log "Unzipping FLAME2023 into flame/…"
+    unzip -q "$FLAME_ZIP" -d "$FLAME_DIR"
     rm "$FLAME_ZIP"
 else
-    warn "FLAME2023 already present – skipping download."
+    warn "flame/assets already exists – skipping download."
 fi
 
 ###############################################################################
