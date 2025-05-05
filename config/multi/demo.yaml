@@ -3,7 +3,7 @@ DATA:
   data_root: datasets/ensemble_dataset/ 
   wav_path: wav
   vertices_path: npz
-  template_file: templates.pkl
+  template_file: generic_model.pkl
   train_subjects: English 
 
 NETWORK:
