@@ -130,7 +130,7 @@ def process_audio(wav_path):
     feat = torch.FloatTensor(proc(speech, sampling_rate=16000).input_values).to(device)
 
     # (2) template
-    tpl_file = os.path.join("assets/FLAME2023", cfg.template_file)
+    tpl_file = os.path.join("flame/assets", cfg.template_file)
     tpl = torch.FloatTensor(pickle.load(open(tpl_file, "rb"), encoding="latin1")["v_template"].ravel()).to(device).unsqueeze(0)
 
     # (3) predicciones
