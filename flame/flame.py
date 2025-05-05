@@ -1,3 +1,22 @@
+# Code heavily inspired by https://github.com/HavenFeng/photometric_optimization/blob/master/models/FLAME.py.
+# Please consider citing their work if you find this code useful. The code is subject to the license available via
+# https://github.com/vchoutas/smplx/edit/master/LICENSE
+
+# Max-Planck-Gesellschaft zur Förderung der Wissenschaften e.V. (MPG) is
+# holder of all proprietary rights on this computer program.
+# You can only use this computer program if you have closed
+# a license agreement with MPG or you get the right to use the computer
+# program from someone who is authorized to grant you that right.
+# Any use of the computer program without a valid license is prohibited and
+# liable to prosecution.
+#
+# Copyright©2019 Max-Planck-Gesellschaft zur Förderung
+# der Wissenschaften e.V. (MPG). acting on behalf of its Max Planck Institute
+# for Intelligent Systems. All rights reserved.
+#
+# Contact: ps-license@tuebingen.mpg.de
+
+
 from .lbs import lbs, vertices2landmarks, blend_shapes, vertices2joints
 
 import torch
@@ -5,17 +24,18 @@ import torch.nn as nn
 import numpy as np
 import pickle
 from collections import defaultdict
-from pytorch3d.io import load_obj
+try:
+    from pytorch3d.io import load_obj
+except ImportError:
+    from utils.pytorch3d_load_obj import load_obj
 
-FLAME_MESH_PATH = "assets/FLAME2023/head_template_mesh.obj"
-FLAME_LMK_PATH  = "assets/FLAME2023/landmark_embedding_with_eyes.npy"
+FLAME_MESH_PATH = "flame/assets/head_template_mesh.obj"
+FLAME_LMK_PATH = "flame/assets/landmark_embedding_with_eyes.npy"
 
 # to be downloaded from https://flame.is.tue.mpg.de/download.php
-#FLAME_MODEL_PATH = "assets/FLAME2023/flame2023.pkl"  
-FLAME_MODEL_PATH = "assets/FLAME2023/generic_model.pkl"  
-
-#FLAME_MODEL_PATH = "flame_model/assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw rotation)
-FLAME_PARTS_PATH = "assets/FLAME2023/FLAME_masks.pkl" # FLAME Vertex Masks
+# FLAME_MODEL_PATH = "flame_model/assets/flame/generic_model.pkl"  # FLAME 2020
+FLAME_MODEL_PATH = "flame/assets/generic_model.pkl" # FLAME 2020
+FLAME_PARTS_PATH = "flame/assets/FLAME_masks.pkl" # FLAME Vertex Masks
 
 def to_tensor(array, dtype=torch.float32):
     if "torch.tensor" not in str(type(array)):
@@ -68,9 +88,7 @@ class FlameHead(nn.Module):
         flame_lmk_embedding_path=FLAME_LMK_PATH,
         flame_template_mesh_path=FLAME_MESH_PATH,
         include_mask=True,
-        add_teeth=True,
-        add_tongue=True,
-        add_mouth_interior=True,
+        add_teeth=False,
     ):
         super().__init__()
 
@@ -152,7 +170,8 @@ class FlameHead(nn.Module):
 
         self.register_buffer("verts_uvs", aux.verts_uvs, persistent=False)
         self.register_buffer("textures_idx", faces.textures_idx, persistent=False)
-
+        # Check our template mesh faces match those of FLAME:
+        assert (self.faces==torch.from_numpy(flame_model.f.astype('int64'))).all()
         if include_mask:
             self.mask = FlameMask(
                 faces=self.faces, 
@@ -162,117 +181,7 @@ class FlameHead(nn.Module):
             )
 
         if add_teeth:
-            print("Adding teeth to the FLAME model")
             self.add_teeth()
-
-        if add_tongue:
-            print("Adding tongue to the FLAME model")
-            self.add_tongue()
-            
-        if add_mouth_interior:
-            print("Adding mouth plane to the FLAME model")
-            self.add_mouth_interior()
-            
-    def add_mouth_interior(self):
-        # Get upper and lower lip vertices
-        upper_lip = self.mask.v.lip_outside_ring_upper
-        lower_lip = self.mask.v.lip_outside_ring_lower
-
-        # Create a list of vertex pairs to connect
-        vert_pairs = list(zip(upper_lip, lower_lip))
-
-        # Number of horizontal subdivisions (adjust as needed)
-        h_subdivs = 4  # This will create 3 additional lines between upper and lower lip
-
-        # Create new vertices
-        num_verts_orig = self.v_template.shape[0]
-        new_verts = []
-        for i, (up, down) in enumerate(vert_pairs):
-            for j in range(h_subdivs):
-                t = (j + 1) / (h_subdivs + 1)  # Interpolation factor
-                new_point = self.v_template[up] * (1 - t) + self.v_template[down] * t
-                # Move the point slightly towards the inside of the mouth
-                mouth_center = self.v_template[up].mean(dim=0)
-                direction = mouth_center - new_point
-                new_point += direction * 0.1  # Adjust this factor as needed
-                self.v_template = torch.cat([self.v_template, new_point.unsqueeze(0)], dim=0)
-                new_verts.append(num_verts_orig + len(new_verts))
-
-        # Create faces
-        new_faces = []
-        for i in range(len(vert_pairs) - 1):
-            for j in range(h_subdivs + 1):
-                v1 = upper_lip[i] if j == 0 else new_verts[i * h_subdivs + j - 1]
-                v2 = upper_lip[i+1] if j == 0 else new_verts[(i+1) * h_subdivs + j - 1]
-                v3 = new_verts[i * h_subdivs + j] if j < h_subdivs else lower_lip[i]
-                v4 = new_verts[(i+1) * h_subdivs + j] if j < h_subdivs else lower_lip[i+1]
-
-                new_faces.append([v1, v2, v3])
-                new_faces.append([v2, v4, v3])
-
-        # Add new faces to the existing ones
-        num_faces_orig = self.faces.shape[0]
-        self.faces = torch.cat([self.faces, torch.tensor(new_faces, dtype=torch.long, device=self.faces.device)], dim=0)
-
-        # Create a mask for the new faces
-        mouth_interior_face_mask = torch.zeros(self.faces.shape[0], dtype=torch.bool, device=self.faces.device)
-        mouth_interior_face_mask[num_faces_orig:] = True
-
-        # Update other necessary attributes
-        self.update_attributes_for_new_verts(len(new_verts))
-
-        # Update the mask
-        self.mask.update(self.faces, self.textures_idx)
-
-        # Add the new mouth interior mask to the existing masks
-        self.mask.f.register_buffer("mouth_interior", torch.where(mouth_interior_face_mask)[0])
-        if self.add_teeth == True:
-            # Update the mouth_vertices attribute
-            self.mouth_vertices = torch.cat([
-                self.mask.v.lips_tight,
-                self.mask.v.lip_inside,
-                self.mask.v.lip_inside_lower,
-                self.mask.v.lip_inside_upper,
-                self.mask.v.lip_outside_ring_lower,
-                self.mask.v.lip_outside_ring_upper,
-                self.mask.v.lip_inside_ring_lower,
-                self.mask.v.lip_inside_ring_upper,
-                self.mask.v.teeth,
-                self.mask.v.tongue,
-                torch.tensor(new_verts, device=self.mask.v.lips_tight.device)
-            ]).unique()
-        else:
-            self.mouth_vertices = torch.cat([
-                self.mask.v.lips_tight,
-                self.mask.v.lip_inside,
-                self.mask.v.lip_inside_lower,
-                self.mask.v.lip_inside_upper,
-                self.mask.v.lip_outside_ring_lower,
-                self.mask.v.lip_outside_ring_upper,
-                self.mask.v.lip_inside_ring_lower,
-                self.mask.v.lip_inside_ring_upper,
-                torch.tensor(new_verts, device=self.mask.v.lips_tight.device)
-            ]).unique()
-
-    def update_attributes_for_new_verts(self, num_new_verts):
-        num_verts_orig = self.v_template.shape[0] - num_new_verts
-        
-        # Update shapedirs
-        self.shapedirs = torch.cat([self.shapedirs, torch.zeros_like(self.shapedirs[:num_new_verts])], dim=0)
-        
-        # Update posedirs
-        posedirs = self.posedirs.reshape(len(self.parents)-1, 9, num_verts_orig, 3)
-        posedirs = torch.cat([posedirs, torch.zeros_like(posedirs[:, :, :num_new_verts])], dim=2)
-        self.posedirs = posedirs.reshape((len(self.parents)-1)*9, (num_verts_orig+num_new_verts)*3)
-        
-        # Update J_regressor
-        self.J_regressor = torch.cat([self.J_regressor, torch.zeros_like(self.J_regressor[:, :num_new_verts])], dim=1)
-        
-        # Update lbs_weights
-        self.lbs_weights = torch.cat([self.lbs_weights, torch.zeros_like(self.lbs_weights[:num_new_verts])], dim=0)
-        
-        # Set lbs_weights for new vertices (you might want to adjust this based on your needs)
-        self.lbs_weights[-num_new_verts:, 2] = 1  # Assuming jaw bone index is 2
         
     def add_teeth(self):
         # get reference vertices from lips
@@ -287,24 +196,19 @@ class FlameHead(nn.Module):
         mean_dist = (v_lip_upper - v_lip_lower).norm(dim=-1, keepdim=True).mean()
         v_teeth_middle = (v_lip_upper + v_lip_lower) / 2
         v_teeth_middle[:, 1] = v_teeth_middle[:, [1]].mean(dim=0, keepdim=True)
-        v_teeth_middle[:, 2] -= mean_dist * 1.95  # how far the teeth are from the lips
+        # v_teeth_middle[:, 2] -= mean_dist * 2.5  # how far the teeth are from the lips
+        # v_teeth_middle[:, 2] -= mean_dist * 2  # how far the teeth are from the lips
+        v_teeth_middle[:, 2] -= mean_dist * 1.5  # how far the teeth are from the lips
 
         # upper, front
-        v_teeth_upper_edge = v_teeth_middle.clone() + torch.tensor([[0, mean_dist, 0]])*1.0
-        v_teeth_upper_edge[:, 1] += mean_dist * 0.56  # move the upper teeth down
+        v_teeth_upper_edge = v_teeth_middle.clone() + torch.tensor([[0, mean_dist, 0]])*0.1
+        v_teeth_upper_root = v_teeth_upper_edge + torch.tensor([[0, mean_dist, 0]]) * 2  # scale the height of teeth
 
-        v_teeth_upper_edge -= torch.tensor([[0, 0, mean_dist]]) * 1.0 # slightly move the upper teeth to the back MINE
-        
-        v_teeth_upper_edge -= torch.tensor([[0, mean_dist, 0]]) * 1.8  # slightly move the upper teeth down MINE
-        
-        v_teeth_upper_root = v_teeth_upper_edge + torch.tensor([[0, mean_dist, 0]]) * 4.5  # * 1 scale the height of teeth MINE
-        
-        
         # lower, front
-        v_teeth_lower_edge = v_teeth_middle.clone() - torch.tensor([[0, mean_dist, 0]])*1.0
-        v_teeth_lower_edge -= torch.tensor([[0, 0, mean_dist]]) * 1.2  # slightly move the lower teeth to the back
-        v_teeth_lower_root = v_teeth_lower_edge - torch.tensor([[0, mean_dist, 0]]) * 4.5  # scale the height of teeth
-        v_teeth_lower_edge[:, 1] += mean_dist * 0.2  # move the lower teeth up
+        v_teeth_lower_edge = v_teeth_middle.clone() - torch.tensor([[0, mean_dist, 0]])*0.1
+        # v_teeth_lower_edge -= torch.tensor([[0, 0, mean_dist]]) * 0.2  # slightly move the lower teeth to the back
+        v_teeth_lower_edge -= torch.tensor([[0, 0, mean_dist]]) * 0.4  # slightly move the lower teeth to the back
+        v_teeth_lower_root = v_teeth_lower_edge - torch.tensor([[0, mean_dist, 0]]) * 2  # scale the height of teeth
 
         # thickness = mean_dist * 0.5
         thickness = mean_dist * 1.
@@ -537,7 +441,7 @@ class FlameHead(nn.Module):
             [99, 100, 114],  # 130
             [100, 115, 114],  # 131
             [100, 101, 115],  # 132
-            [101, 116, 114],  # 133
+            [101, 116, 115],  # 133
             [101, 102, 116],  # 134
             [102, 117, 116],  # 135
             [102, 103, 117],  # 136
@@ -576,124 +480,17 @@ class FlameHead(nn.Module):
         self.faces = torch.cat([self.faces, f_teeth_upper+num_verts_orig, f_teeth_lower+num_verts_orig], dim=0)
         self.textures_idx = torch.cat([self.textures_idx, f_teeth_upper+num_verts_uv_orig, f_teeth_lower+num_verts_uv_orig], dim=0)
 
-        self.mask.update(self.faces, self.textures_idx) 
-        #sort of working, but not perfect
-    def add_tongue(self):
-        # get reference vertices from lips
-        vid_lip_outside_ring_upper = self.mask.get_vid_by_region(['lip_outside_ring_upper'], keep_order=True)
-        vid_lip_outside_ring_lower = self.mask.get_vid_by_region(['lip_outside_ring_lower'], keep_order=True)
-
-        v_lip_upper = self.v_template[vid_lip_outside_ring_upper]
-        v_lip_lower = self.v_template[vid_lip_outside_ring_lower]
-
-        # construct vertices for tongue
-        mean_dist = (v_lip_upper - v_lip_lower).norm(dim=-1, keepdim=True).mean()
-        v_tongue_middle = (v_lip_upper + v_lip_lower) / 2
-        v_tongue_middle[:, 1] = v_tongue_middle[:, [1]].mean(dim=0, keepdim=True) + mean_dist * 1.5  # Move the tongue up
-        v_tongue_middle[:, 2] -= mean_dist * 8.0  # how far the tongue is from the lips
-
-        # Define the shape of the tongue with a larger base and a wider shape
-        v_tongue_tip = v_tongue_middle.clone()
-        v_tongue_tip[:, 1] += mean_dist * 3.0  # Move the tip up
-        v_tongue_tip[:, 2] -= mean_dist * 3.5  # Move the tip back
-
-        v_tongue_base = v_tongue_middle.clone()
-        v_tongue_base[:, 1] -= mean_dist * 1.0  # Move the base down
-        v_tongue_base[:, 2] -= mean_dist * 0.5  # Move the base slightly back
-
-        # Define left and right parts for the tongue to make it wider
-        v_tongue_left_tip = v_tongue_tip.clone()
-        v_tongue_right_tip = v_tongue_tip.clone()
-        v_tongue_left_base = v_tongue_base.clone()
-        v_tongue_right_base = v_tongue_base.clone()
-
-        # Move left and right parts and adjust inside the mouth
-        v_tongue_left_tip[:, 0] -= mean_dist * 5.0
-        v_tongue_right_tip[:, 0] += mean_dist * -3.0
-        v_tongue_left_base[:, 0] -= mean_dist * 5.5
-        v_tongue_right_base[:, 0] += mean_dist * -3.5
-        
-
-        # Move the tongue up
-        v_tongue_left_tip[:, 1] += mean_dist * 1.5
-        v_tongue_right_tip[:, 1] += mean_dist * 1.5
-        v_tongue_left_base[:, 1] += mean_dist * 1.5
-        v_tongue_right_base[:, 1] += mean_dist * 1.5
-
-        # Concatenate the vertices
-        num_verts_orig = self.v_template.shape[0]
-        v_tongue = torch.cat([
-            v_tongue_left_base,  # num_verts_orig + 0-14
-            v_tongue_right_base,  # num_verts_orig + 15-29
-            v_tongue_left_tip,  # num_verts_orig + 30-44
-            v_tongue_right_tip,  # num_verts_orig + 45-59
-        ], dim=0)
-        num_verts_tongue = v_tongue.shape[0]
-        self.v_template = torch.cat([self.v_template, v_tongue], dim=0)
-
-        vid_tongue_left_base = torch.arange(0, 15) + num_verts_orig
-        vid_tongue_right_base = torch.arange(15, 30) + num_verts_orig
-        vid_tongue_left_tip = torch.arange(30, 45) + num_verts_orig
-        vid_tongue_right_tip = torch.arange(45, 60) + num_verts_orig
-        vid_tongue = torch.cat([vid_tongue_left_base, vid_tongue_right_base, vid_tongue_left_tip, vid_tongue_right_tip], dim=0)
-
-        # update vertex masks
-        self.mask.v.register_buffer("tongue_left_base", vid_tongue_left_base)
-        self.mask.v.register_buffer("tongue_right_base", vid_tongue_right_base)
-        self.mask.v.register_buffer("tongue_left_tip", vid_tongue_left_tip)
-        self.mask.v.register_buffer("tongue_right_tip", vid_tongue_right_tip)
-        self.mask.v.register_buffer("tongue", vid_tongue)
-
-        # Construct faces for the tongue
-        f_tongue = torch.tensor([
-            [0, 15, 30], [15, 45, 30],  # Side faces
-            [0, 1, 15], [1, 16, 15], [15, 16, 45], [16, 46, 45],  # Base faces
-            [30, 45, 31], [45, 46, 31], [30, 31, 1], [1, 31, 16],  # Tip faces
-        ])
-        self.faces = torch.cat([self.faces, f_tongue + num_verts_orig], dim=0)
-
-        # Construct uv vertices for tongue
-        u = torch.linspace(0.62, 0.38, 15)
-        v = torch.linspace(1 - 0.0083, 1 - 0.0425, 4)  # Adjusted to match the expected size
-        uv = torch.stack(torch.meshgrid(u, v, indexing='ij'), dim=-1).permute(1, 0, 2).reshape(-1, 2)  # Adjusted to match the expected size
-        num_verts_uv_orig = self.verts_uvs.shape[0]
-        self.verts_uvs = torch.cat([self.verts_uvs, uv], dim=0)
-
-        # Shapedirs copy from lips
-        self.shapedirs = torch.cat([self.shapedirs, torch.zeros_like(self.shapedirs[:num_verts_tongue])], dim=0)
-        shape_dirs_mean = (self.shapedirs[vid_lip_outside_ring_upper, :, :self.n_shape_params] + self.shapedirs[vid_lip_outside_ring_lower, :, :self.n_shape_params]) / 2
-        self.shapedirs[vid_tongue_left_base, :, :self.n_shape_params] = shape_dirs_mean
-        self.shapedirs[vid_tongue_right_base, :, :self.n_shape_params] = shape_dirs_mean
-        self.shapedirs[vid_tongue_left_tip, :, :self.n_shape_params] = shape_dirs_mean
-        self.shapedirs[vid_tongue_right_tip, :, :self.n_shape_params] = shape_dirs_mean
-
-        # Poseddirs set to zero
-        posedirs = self.posedirs.reshape(len(self.parents) - 1, 9, num_verts_orig, 3)
-        posedirs = torch.cat([posedirs, torch.zeros_like(posedirs[:, :, :num_verts_tongue])], dim=2)
-        self.posedirs = posedirs.reshape((len(self.parents) - 1) * 9, (num_verts_orig + num_verts_tongue) * 3)
-
-        # J_regressor set to zero
-        self.J_regressor = torch.cat([self.J_regressor, torch.zeros_like(self.J_regressor[:, :num_verts_tongue])], dim=1)
-
-        # lbs_weights manually set
-        self.lbs_weights = torch.cat([self.lbs_weights, torch.zeros_like(self.lbs_weights[:num_verts_tongue])], dim=0)
-        self.lbs_weights[vid_tongue, 2] += 1  # Move with jaw
-        self.lbs_weights[vid_tongue, 1] += 1  # Move with jaw
-
-        # add faces for tongue
-        self.faces = torch.cat([self.faces, f_tongue + num_verts_orig], dim=0)
-        self.textures_idx = torch.cat([self.textures_idx, f_tongue + num_verts_uv_orig], dim=0)
-
         self.mask.update(self.faces, self.textures_idx)
+
     def forward(
         self,
-        shape=None,
-        expr=None,
-        rotation=None,
-        neck=None,
-        jaw=None,
-        eyes=None,
-        translation=None,
+        shape,
+        expr,
+        rotation,
+        neck,
+        jaw,
+        eyes,
+        translation,
         zero_centered_at_root_node=False,  # otherwise, zero centered at the face
         return_landmarks=True,
         return_verts_cano=False,
@@ -709,7 +506,6 @@ class FlameHead(nn.Module):
             vertices: N X V X 3
             landmarks: N X number of landmarks X 3
         """
-
         batch_size = shape.shape[0]
 
         betas = torch.cat([shape, expr], dim=1)
@@ -1013,7 +809,7 @@ class FlameMask(nn.Module):
         # skin
         skin_except = ["eyeballs", "hair", "lips_tight", "boundary"]
         if self.num_verts == 5083:
-            skin_except.append("tongue")
+            skin_except.append("teeth")
         skin = self.get_vid_except_region(skin_except)
         self.v.register_buffer("skin", skin)
         

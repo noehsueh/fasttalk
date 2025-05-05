@@ -17,6 +17,10 @@ if [ "${stage}" = "s1" ]; then
     echo "TRAINING STAGE 1" 
     TRAIN_CODE=train_multi_vq.py
     echo "Training for Discrete Motion Prior"
+elif [ "${stage}" = "s2interactive" ]; then
+    echo "TRAINING STAGE 2 INTERACTIVE MODE" 
+    TRAIN_CODE=train_multi_interactive.py
+    echo "Training for Speech-Driven Motion Synthesis (Interactive)"
 else
     echo "TRAINING STAGE 2" 
     TRAIN_CODE=train_multi_pred.py

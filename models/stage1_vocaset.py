@@ -43,13 +43,13 @@ class VQAutoEncoder(BaseModel):
         vertice = vertice - template
 
         combined = torch.cat((vertice, blendshapes), dim=-1)
-
+        
         ###x.shape: [B, L C]
         quant, emb_loss, info = self.encode(combined)
         ### quant [B, C, L]
         dec = self.decode(quant)
 
-        vertice_dec, blendshapes_dec = torch.split(dec, [15789,56], dim=2)
+        vertice_dec, blendshapes_dec = torch.split(dec, [15069,56], dim=2)
 
         vertice_dec = vertice_dec + template
 

@@ -92,6 +92,8 @@ def main_worker(gpu, ngpus_per_node, args):
     
     # ####################### Optimizer ######################## #
     if cfg.use_sgd:
+        #optimizer = torch.optim.SGD(model.parameters(), lr=cfg.base_lr, momentum=cfg.momentum,
+        #                            weight_decay=cfg.weight_decay)
         optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad,model.parameters()), lr=cfg.base_lr, momentum=cfg.momentum,
                                     weight_decay=cfg.weight_decay)
     else:
@@ -114,6 +116,21 @@ def main_worker(gpu, ngpus_per_node, args):
 
     val_loss_log = 1000
 
+    # =========== Load checkpoint ===========
+    checkpoint_path = cfg.noninteractive_pretrained_s2_path
+    print("=> loading checkpoint '{}'".format(checkpoint_path))
+    checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
+    load_state_dict(model, checkpoint['state_dict'], strict=False)
+    print("=> loaded checkpoint '{}'".format(checkpoint_path))
+    # =========== End load checkpoint ===========
+
+    # =========== Load checkpoint ===========
+    #print("=> loading checkpoint '{}'".format("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar"))
+    #checkpoint = torch.load("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar", map_location=lambda storage, loc: storage.cpu())
+    #load_state_dict(model, checkpoint['state_dict'], strict=False)
+    #print("=> loaded checkpoint '{}'".format("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar"))
+    # =========== End load checkpoint ===========
+
     # ####################### Train ############################# #
     for epoch in range(cfg.start_epoch, cfg.epochs):
         loss_train, motion_loss_train, blendshapes_loss_train, reg_loss_train, feat_loss_meter = train(train_loader, model, loss_fn, optimizer, epoch, cfg)
@@ -132,14 +149,14 @@ def main_worker(gpu, ngpus_per_node, args):
 
         wandb.log({"loss_train": loss_train, "motion_loss_train": motion_loss_train, "blendshapes_loss_train": blendshapes_loss_train, "feat_loss_meter": feat_loss_meter, "reg_loss_train": reg_loss_train}, epoch_log)
 
-        if cfg.evaluate and (epoch_log % cfg.eval_freq == 0):
-            loss_val = validate(val_loader, model, loss_fn, cfg)
-            if main_process(cfg):
-                logger.info('VAL Epoch: {} '
-                            'loss_val: {} '
-                            .format(epoch_log, loss_val)
-                            )
-            wandb.log({"loss_val": loss_val}, epoch_log)
+        if epoch_log % cfg.eval_freq == 0:
+            #loss_val = validate(val_loader, model, loss_fn, cfg)
+            #if main_process(cfg):
+            #    logger.info('VAL Epoch: {} '
+            #                'loss_val: {} '
+            #                .format(epoch_log, loss_val)
+            #                )
+            #wandb.log({"loss_val": loss_val}, epoch_log)
             save_checkpoint(model,
                             sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
                             stage=2
@@ -156,6 +173,13 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
 
     model.train()
     model.autoencoder.eval()
+
+    # ===== Put all nets to sleep =====
+    #model.audio_encoder.eval()
+    model.audio_feature_map.eval()
+    model.vertice_map.eval()
+    model.transformer_decoder.eval()
+    model.feat_map.eval()
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"----> Total trainable parameters: {trainable_params}")

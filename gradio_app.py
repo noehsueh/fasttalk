@@ -10,7 +10,7 @@ import matplotlib.animation as animation
 
 from transformers import Wav2Vec2Processor
 from pytorch3d.transforms import matrix_to_euler_angles
-from flame.FLAME import FlameHead
+from flame.flame import FlameHead
 from renderer.renderer import Renderer
 from types import SimpleNamespace
 from models import get_model

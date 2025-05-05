@@ -20,6 +20,7 @@ cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
 
 import wandb
+
 def main():
     args = get_parser()
     os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)

@@ -7,8 +7,8 @@ DATA:
   train_subjects: English 
 
 NETWORK:
-  arch: stage2
-  in_dim: 15845
+  arch: stage2interactive
+  in_dim: 15125
   hidden_size: 1024
   num_hidden_layers: 6
   num_attention_heads: 8
@@ -20,24 +20,26 @@ NETWORK:
   autoencoder: stage1_vocaset
   INaffine: False
   style_emb_method: nnemb # onehot or nnemb
-
+  interactive_window: 50 # Number of frames to be used for interactive window
+  hop_length: 640 # Number of audio samples per frame in your data
+  
 VQuantizer:
   n_embed: 256
   zquant_dim: 64
 
 PREDICTOR:
   feature_dim: 1024
-  vertice_dim: 15845
+  vertice_dim: 15125
   device: cuda
   period: 25
-  vqvae_pretrained_path: checkpoints/s1_model.pth.tar
-  wav2vec2model_path: facebook/wav2vec2-large-xlsr-53 
+  vqvae_pretrained_path: /root/Projects/fasttalk/logs/multi/neck_s1/model_190/model.pth.tar
+  wav2vec2model_path: facebook/wav2vec2-large-xlsr-53   #utter-project/mHuBERT-147
   teacher_forcing: True
   num_layers: 6
   n_head: 4 
 
 DEMO:
-  model_path: checkpoints/s2_model.pth.tar
+  model_path: /root/Projects/fasttalk/logs/multi/neck_s2_interactive/model_45/model.pth.tar #/root/Projects/fasttalk/logs/multi/neck_s2/model_100/model.pth.tar
   condition: English
   subject: id
   demo_wav_dir_path: demo/input/

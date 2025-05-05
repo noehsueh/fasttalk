@@ -17,7 +17,7 @@ LOSS:
 
 
 NETWORK:
-  arch: stage2
+  arch: stage2interactive
   in_dim: 15125
   hidden_size: 1024
   num_hidden_layers: 6
@@ -30,6 +30,8 @@ NETWORK:
   autoencoder: stage1_vocaset
   INaffine: False
   style_emb_method: nnemb # onehot or nnemb
+  interactive_window: 50 # Number of frames to be used for interactive window
+  hop_length: 640 # Number of audio samples per frame in your data
 
 VQuantizer:
   n_embed: 256
@@ -47,6 +49,7 @@ PREDICTOR:
   n_head: 4 # not used
 
 TRAIN:
+  noninteractive_pretrained_s2_path: /root/Projects/fasttalk/logs/multi/neck_s2/model_100/model.pth.tar
   use_sgd: False
   sync_bn: False  # adopt sync_bn or not
   train_gpu: [0]
@@ -74,7 +77,7 @@ TRAIN:
   save_path:
   weight:
   resume:
-  evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
+  evaluate: False  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 5
 
 Distributed:

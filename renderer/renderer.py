@@ -47,7 +47,7 @@ def keep_vertices_and_update_faces(faces, vertices_to_keep):
     return updated_faces
 
 class Renderer(nn.Module):
-    def __init__(self, render_full_head=False, obj_filename='assets/FLAME2023/head_template_mesh.obj'):
+    def __init__(self, render_full_head=False, obj_filename='flame/assets/head_template_mesh.obj'):
         super(Renderer, self).__init__()
         self.image_size = 224
 
@@ -63,7 +63,7 @@ class Renderer(nn.Module):
         colors = torch.tensor([180, 180, 180])[None, None, :].repeat(1, faces.max()+1, 1).float()/255.
 
         flame_masks = pickle.load(
-            open('assets/FLAME2023/FLAME_masks.pkl', 'rb'),
+            open('flame/assets/FLAME_masks.pkl', 'rb'),
             encoding='latin1')
         self.flame_masks = flame_masks
 

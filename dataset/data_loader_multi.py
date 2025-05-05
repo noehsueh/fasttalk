@@ -12,7 +12,8 @@ from collections import defaultdict
 from torch.utils import data
 from transformers import AutoProcessor
 from pytorch3d.transforms import rotation_6d_to_matrix, matrix_to_rotation_6d, matrix_to_euler_angles, euler_angles_to_matrix
-from flame.FLAME import FlameHead
+from flame.flame import FlameHead
+import torch.nn.functional as F
 
 flame    = FlameHead(shape_params=300,expr_params=50)
 
@@ -65,6 +66,18 @@ def get_vertices_from_blendshapes(expr, jaw, neck=None):
 
     return flame_output_only_shape.detach()
 
+def lowpass_filter(tensor, kernel_size=10):
+    # tensor: [seq_len, 3]
+    tensor = tensor.unsqueeze(0).transpose(1,2)  # -> [1, 3, seq_len]
+    
+    # Create a 1D uniform kernel
+    kernel = torch.ones(1, 1, kernel_size, device=tensor.device) / kernel_size
+    
+    # Apply same kernel to each channel (grouped conv)
+    filtered = F.conv1d(tensor, kernel.expand(3, -1, -1), padding=kernel_size//2, groups=3)
+    
+    return filtered.transpose(1,2).squeeze(0)  # -> back to [seq_len, 3]
+
 def read_data(args, test_config=False):
     print("Loading data...")
     data = defaultdict(dict)
@@ -82,7 +95,9 @@ def read_data(args, test_config=False):
 
     if args.read_audio:  # read_audio==False when training vq to save time
         #processor = Wav2Vec2Processor.from_pretrained("facebook/hubert-large-ls960-ft")  # Wav2Vec
-        processor = AutoProcessor.from_pretrained(args.wav2vec2model_path)  
+        #processor = AutoProcessor.from_pretrained(args.wav2vec2model_path)  
+        processor = Wav2Vec2FeatureExtractor.from_pretrained(args.wav2vec2model_path)
+
      
         #feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("facebook/wav2vec2-large-xlsr-53")
         #print("Using {} processor".format("facebook/hubert-large-ls960-ft"))
@@ -114,9 +129,7 @@ def read_data(args, test_config=False):
                     wav_path = os.path.join(r, f)
                     speech_array, sampling_rate = librosa.load(wav_path, sr=16000)
                     input_values_raw            = speech_array
-                    input_values_features       = np.squeeze(processor(speech_array, sampling_rate=16000).input_values) # When using Wav2Vec
-                    #input_values_features       = feature_extractor(speech_array, sampling_rate=16000, return_tensors="pt").input_values
-                    #input_values_features       = np.squeeze(input_values_features.numpy())
+                    input_values_features       = np.squeeze(processor(speech_array, sampling_rate=16000).input_values) 
 
                 key = f.replace("wav", "npy")
                 data[key]["audio"] = input_values_raw if args.read_audio else None
@@ -129,7 +142,8 @@ def read_data(args, test_config=False):
 
                 temp = templates["v_template"]
                 data[key]["template"] = temp.reshape((-1))
-        
+
+            
                 if not os.path.exists(vertice_path):
                     del data[key]
                 else:
@@ -138,17 +152,26 @@ def read_data(args, test_config=False):
                     jaw    = flame_param["pose"][:,3:6].reshape((flame_param["pose"].shape[0], -1))
                     neck   = flame_param["pose"][:,0:3].reshape((flame_param["pose"].shape[0], -1))
 
-                    data[key]["blendshapes"] = np.concatenate((expr, jaw, neck), axis=1)
-
                     # Compute vertices for supervision in vq training
                     exp_tensor  = torch.Tensor(expr)
                     jaw_tensor  = torch.Tensor(jaw)
                     neck_tensor = torch.Tensor(neck)
-                    blendshapes_derived_vertices = get_vertices_from_blendshapes(exp_tensor,jaw_tensor,neck_tensor)
+
+                    # Flip neck horizontally to avoid bias
+                    neck_corrected = neck_tensor.clone() 
+                    neck_corrected[:, [1, 2]] = neck_tensor[:, [2, 1]]
+                    neck_corrected = lowpass_filter(neck_corrected, kernel_size=9)
+                    mean_per_component = neck_corrected.mean(dim=0) # Compute mean across seq (dim 0), keeping the 3 features
+                    neck_corrected = neck_corrected - mean_per_component # Subtract mean from every element
+
+                    data[key]["blendshapes"] = np.concatenate((exp_tensor.numpy(), jaw_tensor.numpy(), neck_corrected.numpy()), axis=1)
+
+                    # Compute vertices for supervision in vq training
+                    blendshapes_derived_vertices = get_vertices_from_blendshapes(exp_tensor,jaw_tensor,neck_corrected)
 
                     data[key]["vertice"] = blendshapes_derived_vertices.reshape((blendshapes_derived_vertices.shape[0], -1)).numpy()
 
-            #if counter > 20:
+            #if counter > 100:
             #    break
                     
     subjects_dict = {}

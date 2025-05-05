@@ -1,6 +1,6 @@
 DATA:
   dataset: multi
-  data_root: datasets/ensemble_dataset/
+  data_root: /root/Datasets/ensemble_dataset
   wav_path: wav
   vertices_path: npz
   template_file: templates.pkl
@@ -14,7 +14,7 @@ LOSS:
 
 NETWORK:
   arch: stage1_vocaset
-  in_dim: 15845
+  in_dim: 15125
   hidden_size: 1024
   num_hidden_layers: 6
   num_attention_heads: 8
