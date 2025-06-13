@@ -49,7 +49,7 @@ class VQAutoEncoder(BaseModel):
         ### quant [B, C, L]
         dec = self.decode(quant)
 
-        vertice_dec, blendshapes_dec = torch.split(dec, [15069,56], dim=2)
+        vertice_dec, blendshapes_dec = torch.split(dec, [15069,58], dim=2)
 
         vertice_dec = vertice_dec + template
 

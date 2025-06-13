@@ -1,11 +1,11 @@
 DATA:
-  dataset: multi
-  data_root: /root/Datasets/ensemble_dataset
+  dataset: artalk
+  data_root: /root/Datasets/ARTalk_data/converted_data
   wav_path: wav
   vertices_path: npz
-  template_file: templates.pkl
+  template_file: flame_model/assets/FLAME_with_eye.pt
   read_audio: True
-  train_subjects: English
+  train_subjects: English 
   val_subjects: English
   test_subjects: English
   log_dir:
@@ -18,7 +18,7 @@ LOSS:
 
 NETWORK:
   arch: stage2interactive
-  in_dim: 15125
+  in_dim: 15127
   hidden_size: 1024
   num_hidden_layers: 6
   num_attention_heads: 8
@@ -39,7 +39,7 @@ VQuantizer:
 
 PREDICTOR:
   feature_dim: 1024
-  vertice_dim: 15125
+  vertice_dim: 15127
   device: cuda
   period: 25
   vqvae_pretrained_path: /root/Projects/fasttalk/logs/multi/neck_s1/model_190/model.pth.tar
@@ -53,7 +53,7 @@ TRAIN:
   use_sgd: False
   sync_bn: False  # adopt sync_bn or not
   train_gpu: [0]
-  workers: 10  # data loader workers
+  workers: 5  # data loader workers
   batch_size: 1  # batch size for training
   batch_size_val: 1  # batch size for validation during training, memory and speed tradeoff
   base_lr:  0.0001 # 0.0001

@@ -103,10 +103,9 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = None
     
     # ####################### Data Loader ####################### #
-    from dataset.data_loader_multi import get_dataloaders
+    from dataset.data_loader_ensemble import get_dataloaders
     dataset = get_dataloaders(cfg)
     train_loader = dataset['train']
-
 
     if cfg.evaluate:
         val_loader = dataset['valid']

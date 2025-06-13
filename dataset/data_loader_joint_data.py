@@ -12,10 +12,10 @@ from collections import defaultdict
 from torch.utils import data
 from transformers import AutoProcessor
 from pytorch3d.transforms import rotation_6d_to_matrix, matrix_to_rotation_6d, matrix_to_euler_angles, euler_angles_to_matrix
-from flame.flame import FlameHead
+from flame_model.FLAME import FLAMEModel
 import torch.nn.functional as F
 
-flame    = FlameHead(shape_params=300,expr_params=50)
+flame    = FLAMEModel(n_shape=300,n_exp=50)
 
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
@@ -44,11 +44,7 @@ class Dataset(data.Dataset):
     def __len__(self):
         return self.len
 
-def get_vertices_from_blendshapes(expr, jaw, neck=None):
-    # Load the encoded file
-    expr_tensor =  expr
-    jaw_tensor  =  jaw 
-    neck_tensor = neck
+def get_vertices_from_blendshapes(expr_tensor, gpose_tensor, jaw_tensor, eyelids_tensor=None):
 
     target_shape_tensor = torch.zeros(expr_tensor.shape[0], 300).expand(expr_tensor.shape[0], -1)
 
@@ -58,11 +54,12 @@ def get_vertices_from_blendshapes(expr, jaw, neck=None):
     eye_l    = I.clone().squeeze()
     eyes     = torch.cat([eye_r,eye_l],dim=0).expand(expr_tensor.shape[0], -1)
 
-    translation = torch.zeros(expr_tensor.shape[0], 3)
-    rotation    = I.clone().expand(expr_tensor.shape[0], -1)
+    pose = torch.cat([gpose_tensor, jaw_tensor], dim=-1)
 
-    # Compute Flame
-    flame_output_only_shape = flame.forward(target_shape_tensor, expr_tensor, rotation, neck, jaw_tensor, eyes, translation, return_landmarks=False)
+    flame_output_only_shape,_ = flame.forward(shape_params=target_shape_tensor, 
+                                               expression_params=expr_tensor, 
+                                               pose_params=pose, 
+                                               eye_pose_params=eyes)
 
     return flame_output_only_shape.detach()
 
@@ -78,6 +75,53 @@ def lowpass_filter(tensor, kernel_size=10):
     
     return filtered.transpose(1,2).squeeze(0)  # -> back to [seq_len, 3]
 
+
+def apply_temporal_smoothing(data, window_size=15, sigma=2.0):
+    """
+    Apply Gaussian temporal smoothing to a sequence of pose data.
+    Args:
+        data: Tensor or NumPy array of shape [N, D] where N is number of frames and D is dimensions
+        window_size: Size of the smoothing window (should be odd)
+        sigma: Standard deviation for Gaussian kernel
+    Returns:
+        Smoothed tensor or array of same shape and type as input
+    """
+    # Convert to tensor if numpy array
+    is_numpy = isinstance(data, np.ndarray)
+    if is_numpy:
+        data = torch.tensor(data, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+    device = data.device
+    # Ensure window size is odd
+    if window_size % 2 == 0:
+        window_size += 1
+    # Create Gaussian kernel
+    kernel_range = torch.arange(window_size, device=device) - (window_size // 2)
+    kernel = torch.exp(-(kernel_range ** 2) / (2 * sigma ** 2))
+    kernel = kernel / kernel.sum()  # Normalize
+    # Apply convolution for each dimension
+    smoothed_data = torch.zeros_like(data)
+    for i in range(data.shape[1]):
+        # Extract the channel data
+        channel_data = data[:, i]
+        # Manual padding with reflection
+        pad_size = window_size // 2
+        padded_channel = torch.cat([
+            torch.flip(channel_data[:pad_size], [0]),  # Reflect left padding
+            channel_data,
+            torch.flip(channel_data[-pad_size:], [0])  # Reflect right padding
+        ])
+        # Apply 1D convolution
+        smoothed_channel = torch.zeros_like(channel_data)
+        for j in range(len(channel_data)):
+            # Apply kernel manually
+            window = padded_channel[j:j+window_size]
+            smoothed_channel[j] = torch.sum(window * kernel)
+        smoothed_data[:, i] = smoothed_channel
+    # Convert back to numpy if input was numpy
+    if is_numpy:
+        smoothed_data = smoothed_data.cpu().numpy()
+    return smoothed_data
+
 def read_data(args, test_config=False):
     print("Loading data...")
     data = defaultdict(dict)
@@ -88,10 +132,8 @@ def read_data(args, test_config=False):
     audio_path = os.path.join(args.data_root, args.wav_path)
     vertices_path = os.path.join(args.data_root, args.vertices_path)
     
-    template_file = os.path.join(args.data_root, args.template_file)
-    with open(template_file, 'rb') as fin:
-        print("Loading template from: ", template_file)
-        templates = pickle.load(fin, encoding='latin1')
+    template_file = torch.load(args.template_file, map_location="cpu")
+    templates = template_file['flame_model']
 
     if args.read_audio:  # read_audio==False when training vq to save time
         #processor = Wav2Vec2Processor.from_pretrained("facebook/hubert-large-ls960-ft")  # Wav2Vec
@@ -115,12 +157,12 @@ def read_data(args, test_config=False):
     for tt in test_lines:
         test_list.append(tt.split("\n")[0])
 
-    #counter = 0
+    counter = 0
     for r, ds, fs in os.walk(audio_path):
 
         for f in tqdm(fs):
-            #counter += 1
-            ###Activate when testing the model
+            counter += 1
+            # Activate when testing the model
             if test_config and f not in test_list:
                 continue
 
@@ -148,31 +190,36 @@ def read_data(args, test_config=False):
                     del data[key]
                 else:
                     flame_param = np.load(vertice_path, allow_pickle=True)
-                    expr   = flame_param["exp"].reshape((flame_param["exp"].shape[0], -1))
-                    jaw    = flame_param["pose"][:,3:6].reshape((flame_param["pose"].shape[0], -1))
-                    neck   = flame_param["pose"][:,0:3].reshape((flame_param["pose"].shape[0], -1))
 
-                    # Compute vertices for supervision in vq training
-                    exp_tensor  = torch.Tensor(expr)
-                    jaw_tensor  = torch.Tensor(jaw)
-                    neck_tensor = torch.Tensor(neck)
+                    if flame_param["exp"].shape[0] > 600:
+                        del data[key]
+                    else:
+                        if 'pose' in flame_param:
+                            expr   = flame_param["exp"].reshape(-1,50)
+                            jaw    = flame_param["pose"][:,3:6].reshape(-1,3)
+                            gpose  = flame_param["pose"][:,0:3].reshape(-1,3)
+                            gpose  = gpose - gpose.mean(axis=0, keepdims=True)
+                        else:
+                            expr    = flame_param["exp"].reshape((flame_param["exp"].shape[0], -1))
+                            gpose   = flame_param["gpose"].reshape((flame_param["gpose"].shape[0], -1))
+                            jaw     = flame_param["jaw"].reshape((flame_param["jaw"].shape[0], -1))
 
-                    # Flip neck horizontally to avoid bias
-                    neck_corrected = neck_tensor.clone() 
-                    neck_corrected[:, [1, 2]] = neck_tensor[:, [2, 1]]
-                    neck_corrected = lowpass_filter(neck_corrected, kernel_size=9)
-                    mean_per_component = neck_corrected.mean(dim=0) # Compute mean across seq (dim 0), keeping the 3 features
-                    neck_corrected = neck_corrected - mean_per_component # Subtract mean from every element
+                        # Compute vertices for supervision in vq training
+                        exp_tensor   = torch.Tensor(expr)
+                        jaw_tensor   = torch.Tensor(jaw)
+                        gpose_tensor = torch.Tensor(gpose)
+                        eyelids_tensor = torch.ones((exp_tensor.shape[0], 2))
 
-                    data[key]["blendshapes"] = np.concatenate((exp_tensor.numpy(), jaw_tensor.numpy(), neck_corrected.numpy()), axis=1)
+                        concat_blendshapes = np.concatenate((exp_tensor.numpy(), gpose_tensor.numpy(), jaw_tensor.numpy(), eyelids_tensor.numpy()), axis=1)
 
-                    # Compute vertices for supervision in vq training
-                    blendshapes_derived_vertices = get_vertices_from_blendshapes(exp_tensor,jaw_tensor,neck_corrected)
+                        data[key]["blendshapes"] = concat_blendshapes
 
-                    data[key]["vertice"] = blendshapes_derived_vertices.reshape((blendshapes_derived_vertices.shape[0], -1)).numpy()
+                        blendshapes_derived_vertices = get_vertices_from_blendshapes(exp_tensor, gpose_tensor, jaw_tensor)
 
-            #if counter > 100:
-            #    break
+                        data[key]["vertice"] = blendshapes_derived_vertices.reshape((blendshapes_derived_vertices.shape[0], -1)).numpy()
+
+            if counter > 1000:
+                break
                     
     subjects_dict = {}
     subjects_dict["train"] = [i for i in args.train_subjects.split(" ")]
@@ -184,7 +231,8 @@ def read_data(args, test_config=False):
     for k, v in data.items():
         k_wav = k.replace("npy", "wav")
         if k_wav in train_list:
-            if train_cnt<int(len(train_list)*0.9):
+            #if train_cnt<int(len(train_list)*0.9):
+            if train_cnt < int(counter* 0.7):
                 train_data.append(v)
             else:
                 valid_data.append(v)
@@ -202,12 +250,18 @@ def get_dataloaders(args, test_config=False):
 
     if not test_config:
         train_data = Dataset(train_data, subjects_dict, "train", args.read_audio)
+
         dataset["train"] = data.DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=True,
                                            num_workers=args.workers)
+        
         valid_data = Dataset(valid_data, subjects_dict, "val", args.read_audio)
+
         dataset["valid"] = data.DataLoader(dataset=valid_data, batch_size=1, shuffle=False, num_workers=args.workers)
+
     test_data = Dataset(test_data, subjects_dict, "test", args.read_audio)
+
     dataset["test"] = data.DataLoader(dataset=test_data, batch_size=1, shuffle=True, num_workers=args.workers)
+
     return dataset
 
 

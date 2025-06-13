@@ -47,12 +47,12 @@ def keep_vertices_and_update_faces(faces, vertices_to_keep):
     return updated_faces
 
 class Renderer(nn.Module):
-    def __init__(self, render_full_head=False, obj_filename='flame/assets/head_template_mesh.obj'):
+    def __init__(self, render_full_head=False, obj_filename='flame_model/assets/head_template_mesh_with_eye.obj'):
         super(Renderer, self).__init__()
-        self.image_size = 224
+        self.image_size = 512
 
         verts, faces, aux = load_obj(obj_filename)
-        uvcoords = aux.verts_uvs[None, ...]      # (N, V, 2)
+        #uvcoords = aux.verts_uvs[None, ...]      # (N, V, 2)
         uvfaces = faces.textures_idx[None, ...] # (N, F, 3)
         faces = faces.verts_idx[None,...]
 
@@ -60,10 +60,11 @@ class Renderer(nn.Module):
         self.render_full_head = render_full_head
 
         # shape colors, for rendering shape overlay
-        colors = torch.tensor([180, 180, 180])[None, None, :].repeat(1, faces.max()+1, 1).float()/255.
+        colors = torch.tensor([12, 156, 91])[None, None, :].repeat(1, faces.max()+1, 1).float()/255.
+        self.background_color = (1., 1., 1.) # white background
 
         flame_masks = pickle.load(
-            open('flame/assets/FLAME_masks.pkl', 'rb'),
+            open('flame_model/assets/FLAME_masks.pkl', 'rb'),
             encoding='latin1')
         self.flame_masks = flame_masks
 
@@ -80,15 +81,15 @@ class Renderer(nn.Module):
         face_colors = face_vertices(colors, faces)
         self.register_buffer('face_colors', face_colors)
         
-        self.register_buffer('raw_uvcoords', uvcoords)
+        #self.register_buffer('raw_uvcoords', uvcoords)
 
         # uv coords
-        uvcoords = torch.cat([uvcoords, uvcoords[:,:,0:1]*0.+1.], -1) #[bz, ntv, 3]
-        uvcoords = uvcoords*2 - 1; uvcoords[...,1] = -uvcoords[...,1]
-        face_uvcoords = face_vertices(uvcoords, uvfaces)
-        self.register_buffer('uvcoords', uvcoords)
-        self.register_buffer('uvfaces', uvfaces)
-        self.register_buffer('face_uvcoords', face_uvcoords)
+        #uvcoords = torch.cat([uvcoords, uvcoords[:,:,0:1]*0.+1.], -1) #[bz, ntv, 3]
+        #uvcoords = uvcoords*2 - 1; uvcoords[...,1] = -uvcoords[...,1]
+        #face_uvcoords = face_vertices(uvcoords, uvfaces)
+        #self.register_buffer('uvcoords', uvcoords)
+        #self.register_buffer('uvfaces', uvfaces)
+        #self.register_buffer('face_uvcoords', face_uvcoords)
 
         ## SH factors for lighting
         pi = np.pi
@@ -164,46 +165,101 @@ class Renderer(nn.Module):
         shading = self.add_directionlight(normal_images.permute(0,2,3,1).reshape([batch_size, -1, 3]), lights)
         shading_images = shading.reshape([batch_size, albedo_images.shape[2], albedo_images.shape[3], 3]).permute(0,3,1,2).contiguous()        
         shaded_images = albedo_images*shading_images
+
+        #return shaded_images
+
+        # Get visibility mask (last channel of rendering)
+        #vismask = rendering[:, -1:, :, :]  # shape: [B, 1, H, W]
+
+        # Apply white background where no face was rendered
+        #shaded_images = shaded_images * vismask + (1.0 - vismask)  # white = [1,1,1]
+
+        #return shaded_images
         
+        # Get visibility mask (last channel of rendering)
+        vismask = rendering[:, -1:, :, :]  # shape: [B, 1, H, W]
+
+        # Convert background color to a tensor: [1, 3, 1, 1] broadcastable shape
+        bg_tensor = torch.tensor(self.background_color, dtype=shaded_images.dtype, device=shaded_images.device).view(1, 3, 1, 1)
+
+        # Apply custom background color where vismask == 0
+        shaded_images = shaded_images * vismask + bg_tensor * (1.0 - vismask)
+
         return shaded_images
 
 
-    def rasterize(self, vertices, faces, attributes=None, h=None, w=None):
-        fixed_vertices = vertices.clone()
-        fixed_vertices[...,:2] = -fixed_vertices[...,:2]
 
+    def rasterize(self, vertices, faces, attributes=None, h=None, w=None):
+        # Clone the input vertices to avoid modifying the original data
+        fixed_vertices = vertices.clone()
+
+        # Invert x and y axes to match screen coordinate convention
+        fixed_vertices[..., :2] = -fixed_vertices[..., :2]
+
+        # Determine the rendering resolution
         if h is None and w is None:
-            image_size = self.image_size
+            image_size = self.image_size  # default image size
         else:
             image_size = [h, w]
-            if h>w:
-                fixed_vertices[..., 1] = fixed_vertices[..., 1]*h/w
+            # Adjust aspect ratio if custom height and width are given
+            if h > w:
+                fixed_vertices[..., 1] = fixed_vertices[..., 1] * h / w
             else:
-                fixed_vertices[..., 0] = fixed_vertices[..., 0]*w/h
-            
+                fixed_vertices[..., 0] = fixed_vertices[..., 0] * w / h
+
+        # Create a PyTorch3D Meshes object with the given vertices and faces
         meshes_screen = Meshes(verts=fixed_vertices.float(), faces=faces.long())
+
+        # Rasterize the mesh: project mesh faces into image space
         pix_to_face, zbuf, bary_coords, dists = rasterize_meshes(
             meshes_screen,
             image_size=image_size,
-            blur_radius=0.0,
-            faces_per_pixel=1,
+            blur_radius=0.0,             # no anti-aliasing blur
+            faces_per_pixel=1,           # store only the closest face per pixel
             bin_size=None,
             max_faces_per_bin=None,
-            perspective_correct=False,
+            perspective_correct=False,  # skip perspective correction for speed
         )
+
+        # Visibility mask: 1 where a face is rendered at the pixel, 0 otherwise
         vismask = (pix_to_face > -1).float()
+
+        # Number of attribute channels per vertex (e.g. color + normal = 6)
         D = attributes.shape[-1]
-        attributes = attributes.clone(); attributes = attributes.view(attributes.shape[0]*attributes.shape[1], 3, attributes.shape[-1])
+
+        # Flatten the first two dims: [B, F, 3, D] → [B*F, 3, D]
+        attributes = attributes.clone()
+        attributes = attributes.view(attributes.shape[0] * attributes.shape[1], 3, D)
+
+        # Get rasterizer output shape: [B, H, W, K=1, ...]
         N, H, W, K, _ = bary_coords.shape
+
+        # Mark pixels with no face assigned
         mask = pix_to_face == -1
+
+        # Replace -1 face indices (invalid) with 0 to avoid indexing errors
         pix_to_face = pix_to_face.clone()
         pix_to_face[mask] = 0
+
+        # Gather vertex attributes using face indices
+        # Output shape: [B*H*W*K, 3, D] → reshape → [B, H, W, K, 3, D]
         idx = pix_to_face.view(N * H * W * K, 1, 1).expand(N * H * W * K, 3, D)
         pixel_face_vals = attributes.gather(0, idx).view(N, H, W, K, 3, D)
+
+        # Interpolate attributes using barycentric coordinates
+        # Resulting shape: [B, H, W, K, D]
         pixel_vals = (bary_coords[..., None] * pixel_face_vals).sum(dim=-2)
-        pixel_vals[mask] = 0  # Replace masked values in output.
-        pixel_vals = pixel_vals[:,:,:,0].permute(0,3,1,2)
-        pixel_vals = torch.cat([pixel_vals, vismask[:,:,:,0][:,None,:,:]], dim=1)
+
+        # Zero out invalid pixels (those originally with -1 face index)
+        pixel_vals[mask] = 0
+
+        # Collapse K dimension (only 1 face per pixel), and permute to [B, D, H, W]
+        pixel_vals = pixel_vals[:, :, :, 0].permute(0, 3, 1, 2)
+
+        # Append visibility mask as an additional channel: [B, D+1, H, W]
+        pixel_vals = torch.cat([pixel_vals, vismask[:, :, :, 0][:, None, :, :]], dim=1)
+
+        # Return the per-pixel interpolated attributes + visibility
         return pixel_vals
 
     def add_SHlight(self, normal_images, sh_coeff):
@@ -274,7 +330,7 @@ class Renderer(nn.Module):
         normals = vertex_normals(vertices, faces) 
         face_normals = face_vertices(normals, faces)
         
-        colors = torch.tensor([180, 180, 180])[None, None, :].repeat(1, transformed_vertices.shape[1]+1, 1).float()/255.
+        colors = torch.tensor([12, 156, 91])[None, None, :].repeat(1, transformed_vertices.shape[1]+1, 1).float()/255.
         colors = colors.cuda()
 
         face_colors = face_vertices(colors, faces[0].unsqueeze(0))

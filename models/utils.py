@@ -42,6 +42,18 @@ def enc_dec_mask(device, dataset, T, S):
             mask[i, i * 2:i * 2 + 2] = 0
     return (mask==1).to(device=device)
 
+def enc_dec_mask_simple(device, T, S):
+    """
+    Create a causal encoder-decoder attention mask of shape [T, S],
+    where decoder step t can attend to memory steps <= t.
+    Assumes T == S.
+    """
+    assert T == S, "For causal frame-by-frame alignment, T and S must be equal"
+    mask = torch.triu(torch.ones(T, S, device=device), diagonal=1)
+    mask = mask.masked_fill(mask == 1, float('-inf'))  # Fill upper triangle with -inf
+    return mask  # [T_tgt, T_memory]
+
+
 # Periodic Positional Encoding
 class PeriodicPositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, period=25, max_seq_len=600):

@@ -79,6 +79,20 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         torch.cuda.set_device(gpu)
         model = model.cuda()
+
+    # ####################### Load Pretrained ####################### #
+    artalk_vq_checkpoint_path = cfg.vqvae_pretrained_path
+    artalk_vq_checkpoint = torch.load(artalk_vq_checkpoint_path)
+
+    if "state_dict" in artalk_vq_checkpoint:
+        model.load_state_dict(artalk_vq_checkpoint["state_dict"])
+    else:
+        model.load_state_dict(artalk_vq_checkpoint,map_location=lambda storage, loc: storage.cpu())
+
+    print("Loaded pretrained model from: ", artalk_vq_checkpoint_path)
+    print("Starting fine-tuning...")
+
+
     # ####################### Optimizer ####################### #
     if cfg.use_sgd:
         optimizer = torch.optim.SGD(model.parameters(), lr=cfg.base_lr, momentum=cfg.momentum,
@@ -92,7 +106,7 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = None
 
     # ####################### Data Loader ####################### #
-    from dataset.data_loader_multi import get_dataloaders
+    from dataset.data_loader_artalk import get_dataloaders
     dataset = get_dataloaders(cfg)
     train_loader = dataset['train']
     if cfg.evaluate:

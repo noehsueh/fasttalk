@@ -74,7 +74,7 @@ def main():
         raise RuntimeError("=> no checkpoint flound at '{}'".format(cfg.model_path))
 
     # ####################### Data Loader ####################### #
-    from dataset.data_loader_multi import get_dataloaders
+    from dataset.data_loader_ensemble import get_dataloaders
     dataset = get_dataloaders(cfg, test_config=True)
     test_loader = dataset['test']
 

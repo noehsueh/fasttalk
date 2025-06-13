@@ -64,6 +64,19 @@ def main_worker(gpu, ngpus_per_node, args):
             cfg.rank = cfg.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=cfg.dist_backend, init_method=cfg.dist_url, world_size=cfg.world_size,
                                 rank=cfg.rank)
+        
+
+    # ####################### Data Loader ####################### #
+    from dataset.data_loader_joint_data import get_dataloaders
+    dataset = get_dataloaders(cfg)
+    train_loader = dataset['train']
+
+    if cfg.evaluate:
+        val_loader = dataset['valid']
+        test_loader = dataset['test']
+
+    val_loss_log = 1000
+    
     # ####################### Model ####################### #
     global logger
     logger = get_logger()
@@ -86,14 +99,11 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.cuda.set_device(gpu)
         model = model.cuda()
 
-    
     # ####################### Loss ############################# #
     loss_fn = nn.MSELoss()
     
     # ####################### Optimizer ######################## #
     if cfg.use_sgd:
-        #optimizer = torch.optim.SGD(model.parameters(), lr=cfg.base_lr, momentum=cfg.momentum,
-        #                            weight_decay=cfg.weight_decay)
         optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad,model.parameters()), lr=cfg.base_lr, momentum=cfg.momentum,
                                     weight_decay=cfg.weight_decay)
     else:
@@ -103,33 +113,14 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = StepLR(optimizer, step_size=cfg.step_size, gamma=cfg.gamma)
     else:
         scheduler = None
-    
-    # ####################### Data Loader ####################### #
-    from dataset.data_loader_multi import get_dataloaders
-    dataset = get_dataloaders(cfg)
-    train_loader = dataset['train']
-
-
-    if cfg.evaluate:
-        val_loader = dataset['valid']
-        test_loader = dataset['test']
-
-    val_loss_log = 1000
 
     # =========== Load checkpoint ===========
     #checkpoint_path = cfg.noninteractive_pretrained_s2_path
-    checkpoint_path = "/root/Projects/fasttalk/logs/multi/neck_s2_interactive/model_45/model.pth.tar"
-    print("=> loading checkpoint '{}'".format(checkpoint_path))
-    checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
-    load_state_dict(model, checkpoint['state_dict'], strict=False)
-    print("=> loaded checkpoint '{}'".format(checkpoint_path))
-    # =========== End load checkpoint ===========
-
-    # =========== Load checkpoint ===========
-    #print("=> loading checkpoint '{}'".format("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar"))
-    #checkpoint = torch.load("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar", map_location=lambda storage, loc: storage.cpu())
+    #checkpoint_path = "/root/Projects/fasttalk/logs/joint_data/joint_data_6k_s2/model_80_hlr/model.pth.tar"
+    #print("=> Loading checkpoint '{}'".format(checkpoint_path))
+    #checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
     #load_state_dict(model, checkpoint['state_dict'], strict=False)
-    #print("=> loaded checkpoint '{}'".format("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar"))
+    #print("=> Loaded checkpoint '{}'".format(checkpoint_path))
     # =========== End load checkpoint ===========
 
     # ####################### Train ############################# #
@@ -150,14 +141,14 @@ def main_worker(gpu, ngpus_per_node, args):
 
         wandb.log({"loss_train": loss_train, "motion_loss_train": motion_loss_train, "blendshapes_loss_train": blendshapes_loss_train, "feat_loss_meter": feat_loss_meter, "reg_loss_train": reg_loss_train}, epoch_log)
 
-        if epoch_log % cfg.eval_freq == 0:
-            #loss_val = validate(val_loader, model, loss_fn, cfg)
-            #if main_process(cfg):
-            #    logger.info('VAL Epoch: {} '
-            #                'loss_val: {} '
-            #                .format(epoch_log, loss_val)
-            #                )
-            #wandb.log({"loss_val": loss_val}, epoch_log)
+        if cfg.evaluate and (epoch_log % cfg.eval_freq == 0):
+            loss_val = validate(val_loader, model, loss_fn, cfg)
+            if main_process(cfg):
+                logger.info('VAL Epoch: {} '
+                            'loss_val: {} '
+                            .format(epoch_log, loss_val)
+                            )
+            wandb.log({"loss_val": loss_val}, epoch_log)
             save_checkpoint(model,
                             sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
                             stage=2
@@ -174,13 +165,6 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
 
     model.train()
     model.autoencoder.eval()
-
-    # ===== Put all nets to sleep =====
-    #model.audio_encoder.eval()
-    model.audio_feature_map.eval()
-    model.vertice_map.eval()
-    model.transformer_decoder.eval()
-    model.feat_map.eval()
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"----> Total trainable parameters: {trainable_params}")
@@ -202,7 +186,7 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
         template       = template.cuda(cfg.gpu, non_blocking=True)
 
         loss, loss_detail = model(filename, audio, audio_features, vertice, blendshapes, template, criterion=loss_fn)
-
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -254,11 +238,11 @@ def validate(val_loader, model, loss_fn, cfg):
 
     with torch.no_grad():
         for i, (audio, audio_features, vertice, blendshapes, template, filename) in enumerate(val_loader):
-            audio   = audio.cuda(cfg.gpu, non_blocking=True)
+            audio          = audio.cuda(cfg.gpu, non_blocking=True)
             audio_features = audio_features.cuda(cfg.gpu, non_blocking=True)
-            vertice = vertice.cuda(cfg.gpu, non_blocking=True)
-            blendshapes     = blendshapes.cuda(cfg.gpu, non_blocking=True)
-            template = template.cuda(cfg.gpu, non_blocking=True)
+            vertice        = vertice.cuda(cfg.gpu, non_blocking=True)
+            blendshapes    = blendshapes.cuda(cfg.gpu, non_blocking=True)
+            template       = template.cuda(cfg.gpu, non_blocking=True)
 
             loss, _ = model(filename, audio, audio_features, vertice, blendshapes, template, criterion=loss_fn)
             loss_meter.update(loss.item(), 1)

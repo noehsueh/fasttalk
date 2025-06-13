@@ -33,9 +33,8 @@ FLAME_MESH_PATH = "flame/assets/head_template_mesh.obj"
 FLAME_LMK_PATH = "flame/assets/landmark_embedding_with_eyes.npy"
 
 # to be downloaded from https://flame.is.tue.mpg.de/download.php
-# FLAME_MODEL_PATH = "flame_model/assets/flame/generic_model.pkl"  # FLAME 2020
-FLAME_MODEL_PATH = "flame/assets/generic_model.pkl" # FLAME 2020
-FLAME_PARTS_PATH = "flame/assets/FLAME_masks.pkl" # FLAME Vertex Masks
+FLAME_MODEL_PATH = "flame/assets/generic_model.pkl" 
+FLAME_PARTS_PATH = "flame/assets/FLAME_masks.pkl" 
 
 def to_tensor(array, dtype=torch.float32):
     if "torch.tensor" not in str(type(array)):

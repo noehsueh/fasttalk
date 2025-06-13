@@ -3,6 +3,9 @@ def get_model(cfg):
     if cfg.arch == 'stage1_vocaset':
         from models.stage1_vocaset import VQAutoEncoder as Model
         model = Model(args=cfg)
+    elif cfg.arch == 'stage1':
+        from models.stage1 import VQAutoEncoder as Model
+        model = Model(args=cfg)
     elif cfg.arch == 'stage1_BIWI':
         from models.stage1_BIWI import VQAutoEncoder as Model
         model = Model(args=cfg)

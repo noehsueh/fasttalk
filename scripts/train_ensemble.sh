@@ -6,6 +6,8 @@ export MKL_NUM_THREADS=4
 export NUMEXPR_NUM_THREADS=4
 export KMP_INIT_AT_FORK=FALSE
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 PYTHON=python3
 
 exp_name=$1
@@ -15,16 +17,16 @@ stage=$4
 
 if [ "${stage}" = "s1" ]; then
     echo "TRAINING STAGE 1" 
-    TRAIN_CODE=train_multi_vq.py
+    TRAIN_CODE=train_ensemble_vq.py
     echo "Training for Discrete Motion Prior"
 elif [ "${stage}" = "s2interactive" ]; then
     echo "TRAINING STAGE 2 INTERACTIVE MODE" 
-    TRAIN_CODE=train_multi_interactive.py
+    TRAIN_CODE=train_ensemble_interactive.py
     echo "Training for Speech-Driven Motion Synthesis (Interactive)"
 else
     echo "TRAINING STAGE 2" 
-    TRAIN_CODE=train_multi_pred.py
-    TEST_CODE=test_multi_pred.py
+    TRAIN_CODE=train_ensemble_pred.py
+    TEST_CODE=test_ensemble_pred.py
     echo "Training for Speech-Driven Motion Synthesis"
 fi
 

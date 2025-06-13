@@ -1,14 +1,14 @@
 DATA:
-  dataset: multi
-  data_root: datasets/ensemble_dataset/ 
+  dataset: joint_data
+  data_root: /root/Datasets/joint_data
   wav_path: wav
   vertices_path: npz
-  template_file: generic_model.pkl
+  template_file: flame_model/assets/FLAME_with_eye.pt
   train_subjects: English 
 
 NETWORK:
-  arch: stage2interactive
-  in_dim: 15125
+  arch: stage2
+  in_dim: 58
   hidden_size: 1024
   num_hidden_layers: 6
   num_attention_heads: 8
@@ -17,7 +17,7 @@ NETWORK:
   quant_factor: 0
   face_quan_num: 16
   neg: 0.2
-  autoencoder: stage1_vocaset
+  autoencoder: stage1
   INaffine: False
   style_emb_method: nnemb # onehot or nnemb
   interactive_window: 50 # Number of frames to be used for interactive window
@@ -28,18 +28,19 @@ VQuantizer:
   zquant_dim: 64
 
 PREDICTOR:
-  feature_dim: 1024
-  vertice_dim: 15125
+  feature_dim: 1024 # 512
+  blendshapes_dim: 58
   device: cuda
   period: 25
-  vqvae_pretrained_path: /root/Projects/fasttalk/checkpoints/s1_model.pth.tar
-  wav2vec2model_path: facebook/wav2vec2-large-xlsr-53 
+  vqvae_pretrained_path: /root/Projects/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar
+  wav2vec2model_path: utter-project/mHuBERT-147 # facebook/wav2vec2-large-xlsr-53  
   teacher_forcing: True
   num_layers: 6
-  n_head: 4 
+  n_head: 4
+  batch_size: 1
 
 DEMO:
-  model_path: /root/Projects/fasttalk/checkpoints/s2_model.pth.tar 
+  model_path: /root/Projects/fasttalk/logs/joint_data/joint_data_custom_s2/model_25/model.pth.tar #/root/Projects/fasttalk/checkpoints/s2_model.pth.tar 
   condition: English
   subject: id
   demo_wav_dir_path: demo/input/

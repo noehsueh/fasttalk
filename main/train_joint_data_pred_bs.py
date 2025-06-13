@@ -43,8 +43,8 @@ def main():
         args.distributed = False
         args.multiprocessing_distributed = False
 
-    #initialize wandb
-    wandb.init(project="multitalk_new_s2", name=args.save_path.split("/")[-1],dir="logs")
+    #initialize wandb 
+    wandb.init(project="multitalk_custom_s2", name=args.save_path.split("/")[-1],dir="logs")
     wandb.config.update(args)
 
     if args.multiprocessing_distributed:
@@ -64,6 +64,19 @@ def main_worker(gpu, ngpus_per_node, args):
             cfg.rank = cfg.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=cfg.dist_backend, init_method=cfg.dist_url, world_size=cfg.world_size,
                                 rank=cfg.rank)
+        
+
+    # ####################### Data Loader ####################### #
+    from dataset.data_loader_joint_data_batched import get_dataloaders
+    dataset = get_dataloaders(cfg)
+    train_loader = dataset['train']
+
+    if cfg.evaluate:
+        val_loader = dataset['valid']
+        test_loader = dataset['test']
+
+    val_loss_log = 1000
+    
     # ####################### Model ####################### #
     global logger
     logger = get_logger()
@@ -86,14 +99,11 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.cuda.set_device(gpu)
         model = model.cuda()
 
-    
     # ####################### Loss ############################# #
     loss_fn = nn.MSELoss()
     
     # ####################### Optimizer ######################## #
     if cfg.use_sgd:
-        #optimizer = torch.optim.SGD(model.parameters(), lr=cfg.base_lr, momentum=cfg.momentum,
-        #                            weight_decay=cfg.weight_decay)
         optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad,model.parameters()), lr=cfg.base_lr, momentum=cfg.momentum,
                                     weight_decay=cfg.weight_decay)
     else:
@@ -103,38 +113,19 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = StepLR(optimizer, step_size=cfg.step_size, gamma=cfg.gamma)
     else:
         scheduler = None
-    
-    # ####################### Data Loader ####################### #
-    from dataset.data_loader_multi import get_dataloaders
-    dataset = get_dataloaders(cfg)
-    train_loader = dataset['train']
-
-
-    if cfg.evaluate:
-        val_loader = dataset['valid']
-        test_loader = dataset['test']
-
-    val_loss_log = 1000
 
     # =========== Load checkpoint ===========
     #checkpoint_path = cfg.noninteractive_pretrained_s2_path
-    checkpoint_path = "/root/Projects/fasttalk/logs/multi/neck_s2_interactive/model_45/model.pth.tar"
-    print("=> loading checkpoint '{}'".format(checkpoint_path))
-    checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
-    load_state_dict(model, checkpoint['state_dict'], strict=False)
-    print("=> loaded checkpoint '{}'".format(checkpoint_path))
-    # =========== End load checkpoint ===========
-
-    # =========== Load checkpoint ===========
-    #print("=> loading checkpoint '{}'".format("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar"))
-    #checkpoint = torch.load("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar", map_location=lambda storage, loc: storage.cpu())
+    #checkpoint_path = "/root/Projects/fasttalk/logs/joint_data/joint_data_6k_s2/model_80_hlr/model.pth.tar"
+    #print("=> Loading checkpoint '{}'".format(checkpoint_path))
+    #checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
     #load_state_dict(model, checkpoint['state_dict'], strict=False)
-    #print("=> loaded checkpoint '{}'".format("/home/emmanueliarussi/Projects/MultiTalkOriginal/MultiTalk/logs/multi/MultiTalk_s2_vertex_chunk_frozen_ensemble/model_35/model.pth.tar"))
+    #print("=> Loaded checkpoint '{}'".format(checkpoint_path))
     # =========== End load checkpoint ===========
 
     # ####################### Train ############################# #
     for epoch in range(cfg.start_epoch, cfg.epochs):
-        loss_train, motion_loss_train, blendshapes_loss_train, reg_loss_train, feat_loss_meter = train(train_loader, model, loss_fn, optimizer, epoch, cfg)
+        loss_train, blendshapes_loss_train, reg_loss_train, nt_xent_loss_train = train(train_loader, model, loss_fn, optimizer, epoch, cfg)
         epoch_log = epoch + 1
         if cfg.StepLR:
             scheduler.step()
@@ -142,45 +133,39 @@ def main_worker(gpu, ngpus_per_node, args):
         if main_process(cfg):
             logger.info('TRAIN Epoch: {} '
                         'loss_train: {} '
-                        'motion_loss_train: {} ' 
-                        'blendshapes_loss_train: {} '
                         'reg_loss_train: {} '
-                        .format(epoch_log, loss_train, motion_loss_train, blendshapes_loss_train, reg_loss_train)
+                        'nt_xent_loss_train: {} '
+                        'blendshapes_loss_train: {} '
+                        .format(epoch_log, loss_train, reg_loss_train, nt_xent_loss_train, blendshapes_loss_train)
                         )
 
-        wandb.log({"loss_train": loss_train, "motion_loss_train": motion_loss_train, "blendshapes_loss_train": blendshapes_loss_train, "feat_loss_meter": feat_loss_meter, "reg_loss_train": reg_loss_train}, epoch_log)
+        wandb.log({"loss_train": loss_train, "blendshapes_loss_train": blendshapes_loss_train, "reg_loss_train": reg_loss_train, "nt_xent_loss_train": nt_xent_loss_train}, epoch_log)
 
-        if epoch_log % cfg.eval_freq == 0:
-            #loss_val = validate(val_loader, model, loss_fn, cfg)
-            #if main_process(cfg):
-            #    logger.info('VAL Epoch: {} '
-            #                'loss_val: {} '
-            #                .format(epoch_log, loss_val)
-            #                )
-            #wandb.log({"loss_val": loss_val}, epoch_log)
-            save_checkpoint(model,
-                            sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
-                            stage=2
+        if cfg.evaluate and (epoch_log % cfg.eval_freq == 0):
+            loss_val = validate(val_loader, model, loss_fn, cfg)
+            if main_process(cfg):
+                logger.info('VAL Epoch: {} '
+                            'loss_val: {} '
+                            .format(epoch_log, loss_val)
                             )
+            wandb.log({"loss_val": loss_val}, epoch_log)
+            
+        save_checkpoint(model,
+                        sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
+                        stage=2
+                        )
 
 def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     loss_meter = AverageMeter()
-    loss_motion_meter = AverageMeter()
     loss_blendshapes_meter = AverageMeter()
     loss_reg_meter = AverageMeter()
-    loss_feat_meter = AverageMeter()
+    nt_xent_loss = AverageMeter()
+    
 
     model.train()
     model.autoencoder.eval()
-
-    # ===== Put all nets to sleep =====
-    #model.audio_encoder.eval()
-    model.audio_feature_map.eval()
-    model.vertice_map.eval()
-    model.transformer_decoder.eval()
-    model.feat_map.eval()
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"----> Total trainable parameters: {trainable_params}")
@@ -188,21 +173,19 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
     end = time.time()
     max_iter = cfg.epochs * len(train_loader)
 
-    for i, (audio, audio_features, vertice, blendshapes, template, filename) in enumerate(train_loader):
-
+    for i, (padded_blendshapes, blendshape_mask, padded_audios, audio_mask) in enumerate(train_loader):
         ####################
         current_iter = epoch * len(train_loader) + i + 1
         data_time.update(time.time() - end)
 
         #################### cpu to gpu
-        audio          = audio.cuda(cfg.gpu, non_blocking=True)
-        audio_features = audio_features.cuda(cfg.gpu, non_blocking=True)
-        vertice        = vertice.cuda(cfg.gpu, non_blocking=True)
-        blendshapes    = blendshapes.cuda(cfg.gpu, non_blocking=True)
-        template       = template.cuda(cfg.gpu, non_blocking=True)
+        padded_blendshapes  = padded_blendshapes.cuda(cfg.gpu, non_blocking=True)
+        blendshape_mask     = blendshape_mask.cuda(cfg.gpu, non_blocking=True)
+        padded_audios       = padded_audios.cuda(cfg.gpu, non_blocking=True)
+        audio_mask          = audio_mask.cuda(cfg.gpu, non_blocking=True)
 
-        loss, loss_detail = model(filename, audio, audio_features, vertice, blendshapes, template, criterion=loss_fn)
-
+        loss, loss_detail = model(padded_blendshapes,blendshape_mask,padded_audios,audio_mask,criterion=loss_fn)
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -210,8 +193,8 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
         ######################
         batch_time.update(time.time() - end)
         end = time.time()
-        for m, x in zip([loss_meter, loss_motion_meter, loss_blendshapes_meter, loss_reg_meter, loss_feat_meter],
-                        [loss, loss_detail[0],  loss_detail[1], loss_detail[2], loss_detail[3]]):
+        for m, x in zip([loss_meter, loss_blendshapes_meter, loss_reg_meter, nt_xent_loss],
+                        [loss, loss_detail[0],  loss_detail[1], loss_detail[2]]):
             m.update(x.item(), 1)
 
         if cfg.poly_lr:
@@ -234,33 +217,32 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
                         'Batch: {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain: {remain_time} '
                         'Loss: {loss_meter.val:.4f} '
-                        'loss_motion_meter: {loss_motion_meter.val:.4f} '
-                        'loss_blendshapes_meter: {loss_blendshapes_meter.val:.4f} '
                         'loss_reg_meter: {loss_reg_meter.val:.4f} '
+                        'nt_xent_loss: {nt_xent_loss.val:.4f} '
+                        'loss_blendshapes_meter: {loss_blendshapes_meter.val:.4f} '
                         .format(epoch + 1, cfg.epochs, i + 1, len(train_loader),
                                 batch_time=batch_time, data_time=data_time,
                                 remain_time=remain_time,
                                 loss_meter=loss_meter,
-                                loss_motion_meter=loss_motion_meter,
-                                loss_blendshapes_meter=loss_blendshapes_meter,
-                                loss_reg_meter=loss_reg_meter
+                                loss_reg_meter=loss_reg_meter,
+                                nt_xent_loss=nt_xent_loss,
+                                loss_blendshapes_meter=loss_blendshapes_meter
                                 ))
 
-    return loss_meter.avg, loss_motion_meter.avg, loss_blendshapes_meter.avg, loss_reg_meter.avg, loss_feat_meter.avg
+    return loss_meter.avg, loss_blendshapes_meter.avg, loss_reg_meter.avg, nt_xent_loss.avg
 
 def validate(val_loader, model, loss_fn, cfg):
     loss_meter = AverageMeter()
     model.eval()
 
     with torch.no_grad():
-        for i, (audio, audio_features, vertice, blendshapes, template, filename) in enumerate(val_loader):
-            audio   = audio.cuda(cfg.gpu, non_blocking=True)
-            audio_features = audio_features.cuda(cfg.gpu, non_blocking=True)
-            vertice = vertice.cuda(cfg.gpu, non_blocking=True)
-            blendshapes     = blendshapes.cuda(cfg.gpu, non_blocking=True)
-            template = template.cuda(cfg.gpu, non_blocking=True)
+        for i, (padded_blendshapes, blendshape_mask, padded_audios, audio_mask) in enumerate(val_loader):
+            padded_blendshapes  = padded_blendshapes.cuda(cfg.gpu, non_blocking=True)
+            blendshape_mask     = blendshape_mask.cuda(cfg.gpu, non_blocking=True)
+            padded_audios       = padded_audios.cuda(cfg.gpu, non_blocking=True)
+            audio_mask          = audio_mask.cuda(cfg.gpu, non_blocking=True)
 
-            loss, _ = model(filename, audio, audio_features, vertice, blendshapes, template, criterion=loss_fn)
+            loss, loss_detail = model(padded_blendshapes,blendshape_mask,padded_audios,audio_mask,criterion=loss_fn)
             loss_meter.update(loss.item(), 1)
 
     return loss_meter.avg
