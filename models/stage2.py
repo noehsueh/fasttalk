@@ -70,7 +70,7 @@ class FastTalkTransformerDecoderLayerWithADAIN(nn.Module):
         self,
         d_model: int,
         nhead: int,
-        style_dim: int,                   # ← new
+        style_dim: int,                   
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
         activation: str = "gelu",
@@ -162,15 +162,17 @@ class FastTalkTransformerDecoderLayerWithADAIN(nn.Module):
         tgt = self.adanorm3(tgt, style)
         return tgt
 
+
+"""
 # ------------------------------------------------------------
 # FastTalk decoder *layer* (1 block: self-attn → cross-attn → FFN)
 # ------------------------------------------------------------
 class FastTalkTransformerDecoderLayer(nn.Module):
-    """
-    A near-verbatim re-implementation of `nn.TransformerDecoderLayer`
-    (post-norm style).  You can edit this freely without touching the
-    top-level `CustomTransformerDecoder`.
-    """
+
+    #A near-verbatim re-implementation of `nn.TransformerDecoderLayer`
+    #(post-norm style).  You can edit this freely without touching the
+    #top-level `CustomTransformerDecoder`.
+
 
     def __init__(
         self,
@@ -271,8 +273,7 @@ class FastTalkTransformerDecoderLayer(nn.Module):
         tgt = self.norm3(tgt)
         return tgt
 
-
-
+"""
 
 
 # ------------------------------------------------------------
@@ -295,7 +296,6 @@ class FastTalkTransformerDecoder(nn.Module):
         )
         self.norm = norm
 
-    # ---------- the only changes are the two lines with “style” -------------
     def forward(
         self,
         tgt: torch.Tensor,                       # [B, T, D]
@@ -368,15 +368,22 @@ class CodeTalker(BaseModel):
 
         # style
         # encode every frame → D-dim
-        self.style_frame_encoder = nn.Linear(512, args.feature_dim)
-        # collapse time → one vector per sample
-        self.style_pool = nn.AdaptiveAvgPool1d(1)   # mean-pool in feature space
-        # style token
-        self.style_token = nn.Parameter(torch.randn(1, 1, args.feature_dim) * 0.02)
+        #self.style_frame_encoder = nn.Linear(512, args.feature_dim)
 
+        #self.style_frame_encoder = nn.Sequential(
+        #                                            nn.Conv1d(512, args.feature_dim, kernel_size=3, padding=1),   # temporal context
+        #                                            nn.ReLU(),
+        #                                            nn.AdaptiveAvgPool1d(1)                         # mean-pool over time
+        #                                        )
+
+        self.style_proj = nn.Linear(512, 1024)  
+        self.style_frame_encoder = nn.TransformerEncoder(
+                                                            nn.TransformerEncoderLayer(d_model=1024, nhead=4, batch_first=True),
+                                                            num_layers=2
+                                                        )
 
         # motion decoder
-        #self.feat_map = nn.Linear(args.feature_dim, 512, bias=False)
+        # self.feat_map = nn.Linear(args.feature_dim, 512, bias=False)
         self.feat_map = nn.Linear(args.feature_dim, 512)
 
         self.device = args.device
@@ -392,15 +399,50 @@ class CodeTalker(BaseModel):
             param.requires_grad = False
 
     
+    #def _style_view(self, blend, mask):
+    #    """
+    #    blend : [B, T, 512]   mask : [B, T]  (bool)
+    #    returns: [B, D]  ℓ2-normalised style vector
+    #    """
+    #    feats = self.style_frame_encoder(blend)               # [B, T, D]
+    #    feats = feats * mask.unsqueeze(-1)                    # zero padded
+    #    feats = feats.sum(1) / (mask.sum(1, keepdim=True) + 1e-6)
+    #    return F.normalize(feats, dim=-1)
+
+
+    #def _style_view(self, blend, mask):
+
+    #    # Apply mask before conv (zero out padding)
+    #    feats = blend * mask.unsqueeze(-1)  # [B, T, 512]
+
+        # Transpose for Conv1d: [B, 512, T]
+    #    feats = feats.transpose(1, 2)
+
+        # Encode and pool
+    #    style_vec = self.style_frame_encoder(feats).squeeze(-1)  # [B, D]
+
+    #    return F.normalize(style_vec, dim=-1)
+
+
     def _style_view(self, blend, mask):
-        """
-        blend : [B, T, 58]   mask : [B, T]  (bool)
-        returns: [B, D]  ℓ2-normalised style vector
-        """
-        feats = self.style_frame_encoder(blend)               # [B, T, D]
-        feats = feats * mask.unsqueeze(-1)                    # zero padded
-        feats = feats.sum(1) / (mask.sum(1, keepdim=True) + 1e-6)
-        return F.normalize(feats, dim=-1)
+
+         # Project input to transformer model dimension
+        feats = self.style_proj(blend)  # [B, T, 1024]
+
+        # Positional encoding
+        feats = self.pos_enc(feats)     # [B, T, 1024]
+
+        # Prepare key_padding_mask for the Transformer
+        key_padding_mask = ~mask        # [B, T], where True = ignore
+
+        # Pass through Transformer
+        feats = self.style_frame_encoder(feats, src_key_padding_mask=key_padding_mask)  # [B, T, 1024]
+
+        # Pool only valid frames
+        feats = feats * mask.unsqueeze(-1)
+        style_vec = feats.sum(1) / (mask.sum(1, keepdim=True) + 1e-6)  # [B, 1024]
+
+        return F.normalize(style_vec, dim=-1)
     
 
     def _make_two_views(self, blend, mask, crop_ratio=0.8):
@@ -426,7 +468,7 @@ class CodeTalker(BaseModel):
     def nt_xent_unsup(self, z1, z2, temperature=0.5):
         """
         Numerically-stable SimCLR loss.
-        z1, z2  : [B, D]  (MUST be ℓ2-normalised, float32)
+        z1, z2  : [B, D]  (MUST be l2-normalised, float32)
         returns : scalar loss
         """
         B, _ = z1.shape
@@ -536,15 +578,20 @@ class CodeTalker(BaseModel):
         if target_style is not None:
             feat_q_gt, _, encoded = self.autoencoder.get_quant(target_style, torch.ones_like(target_style[...,0], dtype=torch.bool))
             # a) encode each frame → feature space
-            style_feats = self.style_frame_encoder(feat_q_gt)              # [B, T_s, D]
+            #style_feats = self.style_frame_encoder(feat_q_gt)              # [B, T_s, D]
             # b) masked mean pooling  (all frames valid → just mean)
-            style_vec   = style_feats.mean(dim=1)                             # [B, D]
+            #style_vec   = style_feats.mean(dim=1)                             # [B, D]
+            # normalise for safety
+            #style_vec = F.normalize(style_vec, dim=-1)
+
+            style_feats = self.style_proj(feat_q_gt) 
+            style_feats = self.pos_enc(style_feats) 
+            style_feats = self.style_frame_encoder(style_feats)    
+            style_vec   = style_feats.mean(dim=1)       
+            style_vec   = F.normalize(style_vec, dim=-1)   
         else:
             # fallback: a learnable "neutral" token (could also be zeros)
-            style_vec = torch.zeros(1, self.args.feature_dim,
-                                    device=self.device, dtype=hidden_states.dtype)
-        # normalise for safety
-        style_vec = F.normalize(style_vec, dim=-1)
+            style_vec = torch.zeros(1, self.args.feature_dim, device=self.device, dtype=hidden_states.dtype)
 
         # autoregressive facial motion prediction
         for i in range(frame_num):

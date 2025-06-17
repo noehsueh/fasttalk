@@ -150,10 +150,10 @@ def main_worker(gpu, ngpus_per_node, args):
                             )
             wandb.log({"loss_val": loss_val}, epoch_log)
             
-        save_checkpoint(model,
-                        sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
-                        stage=2
-                        )
+            save_checkpoint(model,
+                            sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
+                            stage=2
+                            )
 
 def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
     batch_time = AverageMeter()
