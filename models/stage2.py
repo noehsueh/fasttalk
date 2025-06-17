@@ -14,7 +14,6 @@ from transformers import Wav2Vec2Model
 from models.utils import init_biased_mask, enc_dec_mask, enc_dec_mask_simple
 from base import BaseModel
 
-#os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
 
 class PositionalEncoding(nn.Module):
     def __init__(self, dim, dropout=0.1, max_len=6000):
@@ -163,119 +162,6 @@ class FastTalkTransformerDecoderLayerWithADAIN(nn.Module):
         return tgt
 
 
-"""
-# ------------------------------------------------------------
-# FastTalk decoder *layer* (1 block: self-attn → cross-attn → FFN)
-# ------------------------------------------------------------
-class FastTalkTransformerDecoderLayer(nn.Module):
-
-    #A near-verbatim re-implementation of `nn.TransformerDecoderLayer`
-    #(post-norm style).  You can edit this freely without touching the
-    #top-level `CustomTransformerDecoder`.
-
-
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        activation: str = "relu",
-        batch_first: bool = True,
-        norm_first: bool = False,   # set True for Pre-LN if desired
-    ):
-        super().__init__()
-        self.self_attn  = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=batch_first
-        )
-        self.cross_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=batch_first
-        )
-
-        # Position-wise feed-forward
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-
-        # Normalisation & dropout
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-
-        self.activation = (
-            F.gelu if activation == "gelu" else F.relu
-        )  # add more if you like
-        self.norm_first = norm_first
-
-    # ---- helper: wrapper for pre/post norm variants -------------------------
-    def _sa_block(self, x, attn_mask, key_padding_mask):
-        x_sa, _ = self.self_attn(
-            x, x, x,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        return self.dropout1(x_sa)
-
-    def _ca_block(self, x, mem, attn_mask, key_padding_mask):
-        x_ca, _ = self.cross_attn(
-            x, mem, mem,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        return self.dropout2(x_ca)
-
-    def _ff_block(self, x):
-        x_ff = self.linear2(self.dropout3(self.activation(self.linear1(x))))
-        return x_ff
-
-    # ------------------------------------------------------------------------
-    def forward(
-        self,
-        tgt: torch.Tensor,
-        memory: torch.Tensor,
-        tgt_mask: Optional[torch.Tensor] = None,
-        memory_mask: Optional[torch.Tensor] = None,
-        tgt_key_padding_mask: Optional[torch.Tensor] = None,
-        memory_key_padding_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-
-        # === Pre-LN variant ==================================================
-        if self.norm_first:
-            # 1) self-attention
-            tgt = tgt + self._sa_block(
-                self.norm1(tgt), tgt_mask, tgt_key_padding_mask
-            )
-            # 2) cross-attention
-            tgt = tgt + self._ca_block(
-                self.norm2(tgt), memory, memory_mask, memory_key_padding_mask
-            )
-            # 3) feed-forward
-            tgt = tgt + self._ff_block(self.norm3(tgt))
-            return tgt
-
-        # === Post-LN (PyTorch default) =======================================
-        # 1) self-attention
-        tgt = tgt + self._sa_block(tgt, tgt_mask, tgt_key_padding_mask)
-        tgt = self.norm1(tgt)
-
-        # 2) cross-attention
-        tgt = tgt + self._ca_block(
-            tgt, memory, memory_mask, memory_key_padding_mask
-        )
-        tgt = self.norm2(tgt)
-
-        # 3) feed-forward
-        tgt = tgt + self._ff_block(tgt)
-        tgt = self.norm3(tgt)
-        return tgt
-
-"""
-
-
 # ------------------------------------------------------------
 # FastTalk decoder (stack of layers)
 # ------------------------------------------------------------
@@ -367,15 +253,6 @@ class CodeTalker(BaseModel):
                                                             )
 
         # style
-        # encode every frame → D-dim
-        #self.style_frame_encoder = nn.Linear(512, args.feature_dim)
-
-        #self.style_frame_encoder = nn.Sequential(
-        #                                            nn.Conv1d(512, args.feature_dim, kernel_size=3, padding=1),   # temporal context
-        #                                            nn.ReLU(),
-        #                                            nn.AdaptiveAvgPool1d(1)                         # mean-pool over time
-        #                                        )
-
         self.style_proj = nn.Linear(512, 1024)  
         self.style_frame_encoder = nn.TransformerEncoder(
                                                             nn.TransformerEncoderLayer(d_model=1024, nhead=4, batch_first=True),
@@ -397,31 +274,6 @@ class CodeTalker(BaseModel):
 
         for param in self.autoencoder.parameters():
             param.requires_grad = False
-
-    
-    #def _style_view(self, blend, mask):
-    #    """
-    #    blend : [B, T, 512]   mask : [B, T]  (bool)
-    #    returns: [B, D]  ℓ2-normalised style vector
-    #    """
-    #    feats = self.style_frame_encoder(blend)               # [B, T, D]
-    #    feats = feats * mask.unsqueeze(-1)                    # zero padded
-    #    feats = feats.sum(1) / (mask.sum(1, keepdim=True) + 1e-6)
-    #    return F.normalize(feats, dim=-1)
-
-
-    #def _style_view(self, blend, mask):
-
-    #    # Apply mask before conv (zero out padding)
-    #    feats = blend * mask.unsqueeze(-1)  # [B, T, 512]
-
-        # Transpose for Conv1d: [B, 512, T]
-    #    feats = feats.transpose(1, 2)
-
-        # Encode and pool
-    #    style_vec = self.style_frame_encoder(feats).squeeze(-1)  # [B, D]
-
-    #    return F.normalize(style_vec, dim=-1)
 
 
     def _style_view(self, blend, mask):
@@ -577,13 +429,6 @@ class CodeTalker(BaseModel):
         #  Build style_vec once per batch ───────────────────────────────
         if target_style is not None:
             feat_q_gt, _, encoded = self.autoencoder.get_quant(target_style, torch.ones_like(target_style[...,0], dtype=torch.bool))
-            # a) encode each frame → feature space
-            #style_feats = self.style_frame_encoder(feat_q_gt)              # [B, T_s, D]
-            # b) masked mean pooling  (all frames valid → just mean)
-            #style_vec   = style_feats.mean(dim=1)                             # [B, D]
-            # normalise for safety
-            #style_vec = F.normalize(style_vec, dim=-1)
-
             style_feats = self.style_proj(feat_q_gt) 
             style_feats = self.pos_enc(style_feats) 
             style_feats = self.style_frame_encoder(style_feats)    

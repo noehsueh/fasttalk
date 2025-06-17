@@ -9,7 +9,7 @@ DATA:
 NETWORK:
   arch: stage2
   in_dim: 58
-  hidden_size: 1024
+  hidden_size: 512
   num_hidden_layers: 6
   num_attention_heads: 8
   intermediate_size: 1536
@@ -28,19 +28,19 @@ VQuantizer:
   zquant_dim: 64
 
 PREDICTOR:
-  feature_dim: 1024 # 512
+  feature_dim: 1024 
   blendshapes_dim: 58
   device: cuda
   period: 25
-  vqvae_pretrained_path: /root/Projects/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar
-  wav2vec2model_path: utter-project/mHuBERT-147 # facebook/wav2vec2-large-xlsr-53  
+  vqvae_pretrained_path: ./checkpoints/model_s1.pth.tar
+  wav2vec2model_path: utter-project/mHuBERT-147 
   teacher_forcing: True
-  num_layers: 6
-  n_head: 4
+  num_layers: 4 
+  n_head: 4 
   batch_size: 1
 
 DEMO:
-  model_path: /root/Projects/fasttalk/logs/joint_data/joint_data_custom_s2/model_25/model.pth.tar #/root/Projects/fasttalk/checkpoints/s2_model.pth.tar 
+  model_path: ./checkpoints/model_s2.pth.tar
   condition: English
   subject: id
   demo_wav_dir_path: demo/input/

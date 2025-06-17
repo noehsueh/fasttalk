@@ -179,7 +179,7 @@ def read_data(args, test_config=False):
                             input_audio_features = np.squeeze(processor(speech_array, sampling_rate=16000).input_values)
                             data[key]["audio"]   = input_audio_features
 
-            if counter > 150:
+            if counter > 1500:
                 break
                    
     subjects_dict = {}

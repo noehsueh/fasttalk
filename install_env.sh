@@ -82,29 +82,32 @@ pip install tensorboardX einops scipy librosa tqdm \
             pyyaml scikit-image wandb matplotlib \
             chumpy datasets
 
-log "Installing Gradio…"
+log "Installing Gradio (for web UI)…"
 pip install --upgrade gradio
+
+log "Installing vector-quantize-pytorch (for VQGAN model)…"
+pip install vector-quantize-pytorch
 
 ###############################################################################
 # 4. FLAME2023 assets
-FLAME_DIR="$PWD/flame"
-FLAME_ZIP="$FLAME_DIR/FLAME2023.zip"
-FLAME_URL="https://drive.google.com/uc?export=download&id=1xKqhqhlozyExenBs9ew7scEjPgrLe-Io"
+FLAME_DIR="$PWD"
+FLAME_ZIP="$FLAME_DIR/flame_model.zip"
+FLAME_URL="https://drive.google.com/file/d/1dgDWQB9hbGMrQMTVhIv32s3WZmq1CzbZ"
 
 mkdir -p "$FLAME_DIR"
 if [[ ! -d "$FLAME_DIR/assets" ]]; then
-    log "Downloading FLAME2023 assets (≈150 MB)…"
+    log "Downloading FLAME assets (≈150 MB)…"
     python - <<'PY'
 import importlib.util, subprocess, sys
 if importlib.util.find_spec("gdown") is None:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "gdown"])
 PY
     gdown "$FLAME_URL" -O "$FLAME_ZIP"
-    log "Unzipping FLAME2023 into flame/…"
+    log "Unzipping FLAME…"
     unzip -q "$FLAME_ZIP" -d "$FLAME_DIR"
     rm "$FLAME_ZIP"
 else
-    warn "flame/assets already exists – skipping download."
+    warn "flame already exists - skipping download."
 fi
 
 ###############################################################################
