@@ -20,7 +20,7 @@ python gradio_app.py
 
 ## Checkpoints
 
-Model checkpoints can be downloaded from [HERE](). Unzip the files inside the `checkpoints` directory.
+Model checkpoints can be downloaded from [HERE](https://drive.google.com/file/d/1D8NGlxvaKR3NLOCxirw6dCS9v7S98G9b). Unzip the files inside the `checkpoints` directory.
 
 ## Instalation - Manual
 
