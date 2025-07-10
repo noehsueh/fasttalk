@@ -115,8 +115,7 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = None
 
     # =========== Load checkpoint ===========
-    #checkpoint_path = cfg.noninteractive_pretrained_s2_path
-    #checkpoint_path = "/root/Projects/fasttalk/logs/joint_data/joint_data_6k_s2/model_80_hlr/model.pth.tar"
+    #checkpoint_path = "/mnt/fasttalk/logs/joint_data/joint_data_gpose_s2/model_25/model.pth.tar"
     #print("=> Loading checkpoint '{}'".format(checkpoint_path))
     #checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
     #load_state_dict(model, checkpoint['state_dict'], strict=False)
@@ -125,7 +124,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # ####################### Train ############################# #
     for epoch in range(cfg.start_epoch, cfg.epochs):
-        loss_train, blendshapes_loss_train, reg_loss_train, nt_xent_loss_train = train(train_loader, model, loss_fn, optimizer, epoch, cfg)
+        loss_train, blendshapes_loss_train, reg_loss_train, nt_xent_loss_train, pose_loss_train = train(train_loader, model, loss_fn, optimizer, epoch, cfg)
         epoch_log = epoch + 1
         if cfg.StepLR:
             scheduler.step()
@@ -135,11 +134,12 @@ def main_worker(gpu, ngpus_per_node, args):
                         'loss_train: {} '
                         'reg_loss_train: {} '
                         'nt_xent_loss_train: {} '
+                        'pose_loss_train: {} '
                         'blendshapes_loss_train: {} '
-                        .format(epoch_log, loss_train, reg_loss_train, nt_xent_loss_train, blendshapes_loss_train)
+                        .format(epoch_log, loss_train, reg_loss_train, nt_xent_loss_train, pose_loss_train, blendshapes_loss_train)
                         )
 
-        wandb.log({"loss_train": loss_train, "blendshapes_loss_train": blendshapes_loss_train, "reg_loss_train": reg_loss_train, "nt_xent_loss_train": nt_xent_loss_train}, epoch_log)
+        wandb.log({"loss_train": loss_train, "blendshapes_loss_train": blendshapes_loss_train, "reg_loss_train": reg_loss_train, "nt_xent_loss_train": nt_xent_loss_train, "pose_loss_train":pose_loss_train}, epoch_log)
 
         if cfg.evaluate and (epoch_log % cfg.eval_freq == 0):
             loss_val = validate(val_loader, model, loss_fn, cfg)
@@ -162,6 +162,7 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
     loss_blendshapes_meter = AverageMeter()
     loss_reg_meter = AverageMeter()
     nt_xent_loss = AverageMeter()
+    pose_loss = AverageMeter()
     
 
     model.train()
@@ -193,8 +194,8 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
         ######################
         batch_time.update(time.time() - end)
         end = time.time()
-        for m, x in zip([loss_meter, loss_blendshapes_meter, loss_reg_meter, nt_xent_loss],
-                        [loss, loss_detail[0],  loss_detail[1], loss_detail[2]]):
+        for m, x in zip([loss_meter, loss_blendshapes_meter, loss_reg_meter, nt_xent_loss, pose_loss],
+                        [loss, loss_detail[0],  loss_detail[1], loss_detail[2], loss_detail[3]]):
             m.update(x.item(), 1)
 
         if cfg.poly_lr:
@@ -219,6 +220,7 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
                         'Loss: {loss_meter.val:.4f} '
                         'loss_reg_meter: {loss_reg_meter.val:.4f} '
                         'nt_xent_loss: {nt_xent_loss.val:.4f} '
+                        'pose_loss: {pose_loss.val:.4f} '
                         'loss_blendshapes_meter: {loss_blendshapes_meter.val:.4f} '
                         .format(epoch + 1, cfg.epochs, i + 1, len(train_loader),
                                 batch_time=batch_time, data_time=data_time,
@@ -226,10 +228,11 @@ def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
                                 loss_meter=loss_meter,
                                 loss_reg_meter=loss_reg_meter,
                                 nt_xent_loss=nt_xent_loss,
+                                pose_loss=pose_loss,
                                 loss_blendshapes_meter=loss_blendshapes_meter
                                 ))
 
-    return loss_meter.avg, loss_blendshapes_meter.avg, loss_reg_meter.avg, nt_xent_loss.avg
+    return loss_meter.avg, loss_blendshapes_meter.avg, loss_reg_meter.avg, nt_xent_loss.avg, pose_loss.avg
 
 def validate(val_loader, model, loss_fn, cfg):
     loss_meter = AverageMeter()

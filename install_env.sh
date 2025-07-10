@@ -80,7 +80,7 @@ pip install tensorboardX einops scipy librosa tqdm \
             sympy==1.13.1 transformers \
             trimesh pyrender pyopengl pyglet opencv-python \
             pyyaml scikit-image wandb matplotlib \
-            chumpy datasets
+            chumpy datasets gdrive
 
 log "Installing Gradio (for web UI)…"
 pip install --upgrade gradio
@@ -92,7 +92,10 @@ pip install vector-quantize-pytorch
 # 4. FLAME2023 assets
 FLAME_DIR="$PWD"
 FLAME_ZIP="$FLAME_DIR/flame_model.zip"
-FLAME_URL="https://drive.google.com/file/d/1dgDWQB9hbGMrQMTVhIv32s3WZmq1CzbZ"
+FLAME_URL="1dgDWQB9hbGMrQMTVhIv32s3WZmq1CzbZ"
+
+
+
 
 mkdir -p "$FLAME_DIR"
 if [[ ! -d "$FLAME_DIR/assets" ]]; then
@@ -101,8 +104,8 @@ if [[ ! -d "$FLAME_DIR/assets" ]]; then
 import importlib.util, subprocess, sys
 if importlib.util.find_spec("gdown") is None:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "gdown"])
-PY
-    gdown "$FLAME_URL" -O "$FLAME_ZIP"
+PY  
+    gdown --id "$FLAME_URL" -O "$FLAME_ZIP"
     log "Unzipping FLAME…"
     unzip -q "$FLAME_ZIP" -d "$FLAME_DIR"
     rm "$FLAME_ZIP"

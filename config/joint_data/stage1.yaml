@@ -1,6 +1,6 @@
 DATA:
   dataset: joint_data
-  data_root: /root/Datasets/joint_data
+  data_root: /mnt/Datasets/joint_data
   wav_path: wav
   vertices_path: npz
   template_file: flame_model/assets/FLAME_with_eye.pt
@@ -36,7 +36,7 @@ TRAIN:
   workers: 5  # data loader workers
   batch_size: 10 #1  # batch size for training
   batch_size_val: 1  # batch size for validation during training, memory and speed tradeoff
-  base_lr: 0.0001 #0.0001
+  base_lr: 0.00001  #0.0001 
   StepLR: True
   warmup_steps: 1
   adaptive_lr: False

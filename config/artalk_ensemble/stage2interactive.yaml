@@ -1,6 +1,6 @@
 DATA:
-  dataset: joint_data
-  data_root: /mnt/Datasets/joint_data
+  dataset: artalk
+  data_root: /root/Datasets/ARTalk_data/converted_data
   wav_path: wav
   vertices_path: npz
   template_file: flame_model/assets/FLAME_with_eye.pt
@@ -8,7 +8,6 @@ DATA:
   train_subjects: English 
   val_subjects: English
   test_subjects: English
-  train_subjects_count: 2
   log_dir:
 
 LOSS:
@@ -16,10 +15,11 @@ LOSS:
   motion_weight: 1.0
   reg_weight: 1.0
 
+
 NETWORK:
-  arch: stage2
-  in_dim: 58
-  hidden_size: 512
+  arch: stage2interactive
+  in_dim: 15127
+  hidden_size: 1024
   num_hidden_layers: 6
   num_attention_heads: 8
   intermediate_size: 1536
@@ -30,6 +30,8 @@ NETWORK:
   autoencoder: stage1_vocaset
   INaffine: False
   style_emb_method: nnemb # onehot or nnemb
+  interactive_window: 50 # Number of frames to be used for interactive window
+  hop_length: 640 # Number of audio samples per frame in your data
 
 VQuantizer:
   n_embed: 256
@@ -37,32 +39,32 @@ VQuantizer:
 
 PREDICTOR:
   feature_dim: 1024
-  blendshapes_dim: 58
+  vertice_dim: 15127
   device: cuda
   period: 25
-  vqvae_pretrained_path: /mnt/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar
-  wav2vec2model_path: utter-project/mHuBERT-147 # facebook/wav2vec2-large-xlsr-53  
+  vqvae_pretrained_path: /root/Projects/fasttalk/logs/multi/neck_s1/model_190/model.pth.tar
+  wav2vec2model_path: facebook/wav2vec2-large-xlsr-53  #utter-project/mHuBERT-147
   teacher_forcing: True
-  num_layers: 4 # 6
-  n_head: 4 # 4
-
+  num_layers: 6
+  n_head: 4 # not used
 
 TRAIN:
+  noninteractive_pretrained_s2_path: /root/Projects/fasttalk/logs/multi/neck_s2/model_100/model.pth.tar
   use_sgd: False
   sync_bn: False  # adopt sync_bn or not
   train_gpu: [0]
-  workers: 10  # data load\er workers
-  batch_size: 10 # 1  # batch size for training
+  workers: 5  # data loader workers
+  batch_size: 1  # batch size for training
   batch_size_val: 1  # batch size for validation during training, memory and speed tradeoff
-  base_lr:  0.00001 # 0.0001 # USE 0.00001 FOR FULL DATASET TRAINING - 0.000001 FOR FINETUNNING
+  base_lr:  0.0001 # 0.0001
   StepLR: False
   warmup_steps: 1
   adaptive_lr: False
   factor: 0.3
   patience: 3
-  threshold: 0.00001
+  threshold: 0.0001
   poly_lr: False
-  epochs: 300
+  epochs: 100
   step_size: 100
   gamma: 0.5
   start_epoch: 0
@@ -75,7 +77,7 @@ TRAIN:
   save_path:
   weight:
   resume:
-  evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
+  evaluate: False  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 5
 
 Distributed:

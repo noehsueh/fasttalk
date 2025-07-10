@@ -1,6 +1,6 @@
 DATA:
   dataset: joint_data
-  data_root: /mnt/Datasets/joint_data
+  data_root: /root/Datasets/joint_data
   wav_path: wav
   vertices_path: npz
   template_file: flame_model/assets/FLAME_with_eye.pt

@@ -1,6 +1,6 @@
 DATA:
-  dataset: joint_data
-  data_root: /mnt/Datasets/joint_data
+  dataset: ARTalk_data
+  data_root: /root/Datasets/ARTalk_data/converted_data
   wav_path: wav
   vertices_path: npz
   template_file: flame_model/assets/FLAME_with_eye.pt
@@ -40,7 +40,7 @@ PREDICTOR:
   blendshapes_dim: 58
   device: cuda
   period: 25
-  vqvae_pretrained_path: /mnt/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar
+  vqvae_pretrained_path: /root/Projects/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar
   wav2vec2model_path: utter-project/mHuBERT-147 # facebook/wav2vec2-large-xlsr-53  
   teacher_forcing: True
   num_layers: 4 # 6
@@ -54,7 +54,7 @@ TRAIN:
   workers: 10  # data load\er workers
   batch_size: 10 # 1  # batch size for training
   batch_size_val: 1  # batch size for validation during training, memory and speed tradeoff
-  base_lr:  0.00001 # 0.0001 # USE 0.00001 FOR FULL DATASET TRAINING - 0.000001 FOR FINETUNNING
+  base_lr:  0.00001 # 0.0001 # 0.0001 # USE 0.00001 FOR FULL DATASET TRAINING
   StepLR: False
   warmup_steps: 1
   adaptive_lr: False

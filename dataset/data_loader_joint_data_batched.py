@@ -106,12 +106,12 @@ def read_data(args, test_config=False):
     for tt in test_lines:
         test_list.append(tt.split("\n")[0])
 
-    counter = 0
+    #counter = 0
     frames_count = 0
     for r, ds, fs in os.walk(audio_path):
 
         for f in tqdm(fs):
-            counter += 1
+            #counter += 1
             # Activate when testing the model
             if test_config and f not in test_list:
                 continue
@@ -156,7 +156,7 @@ def read_data(args, test_config=False):
 
                         # Compute vertices for supervision in vq training
                         exp_tensor    = torch.Tensor(expr)
-                        jaw_tensor    = torch.Tensor(jaw)
+                        jaw_tensor    = torch.Tensor(jaw) 
                         gpose_tensor  = torch.Tensor(gpose)
                         eyelids_tensor = torch.ones((exp_tensor.shape[0], 2)) # Not tracked in all datasets, so we use a placeholder
 
@@ -179,8 +179,8 @@ def read_data(args, test_config=False):
                             input_audio_features = np.squeeze(processor(speech_array, sampling_rate=16000).input_values)
                             data[key]["audio"]   = input_audio_features
 
-            if counter > 1500:
-                break
+            #if counter > 1500:
+            #    break
                    
     subjects_dict = {}
     subjects_dict["train"] = [i for i in args.train_subjects.split(" ")]
@@ -192,8 +192,8 @@ def read_data(args, test_config=False):
     for k, v in data.items():
         k_wav = k.replace("npy", "wav")
         if k_wav in train_list:
-            #if train_cnt<int(len(train_list)*0.9):
-            if train_cnt < int(counter* 0.7):
+            if train_cnt<int(len(train_list)*0.9):
+            #if train_cnt < int(counter* 0.7):
                 train_data.append(v)
             else:
                 valid_data.append(v)
