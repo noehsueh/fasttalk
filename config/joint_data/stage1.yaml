@@ -13,7 +13,7 @@ LOSS:
   quant_loss_weight: 1.0
 
 NETWORK:
-  arch: stage1 #stage1_vocaset
+  arch: stage1 #stage1_fast #stage1_vocaset
   in_dim: 58 #15127
   hidden_size: 512 #1024
   num_hidden_layers: 6

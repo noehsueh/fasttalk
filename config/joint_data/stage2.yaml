@@ -27,7 +27,7 @@ NETWORK:
   quant_factor: 0
   face_quan_num: 16
   neg: 0.2
-  autoencoder: stage1_vocaset
+  autoencoder: stage1
   INaffine: False
   style_emb_method: nnemb # onehot or nnemb
 

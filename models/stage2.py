@@ -477,5 +477,65 @@ class CodeTalker(BaseModel):
 
         return blendshapes_out
 
+    def predict_no_quantizer(self, audio, target_style=None):
+        audio = audio.squeeze(1)
+
+        # Extract audio features using Wav2Vec2
+        hidden_states = self.audio_encoder(audio).last_hidden_state  # [B, T_audio, D]
+        hidden_states = self.audio_feature_map(hidden_states)
+
+        frame_num = hidden_states.shape[1]//2
+
+        #  Build style_vec once per batch ───────────────────────────────
+        if target_style is not None:
+            feat_q_gt, _, encoded = self.autoencoder.get_quant(target_style, torch.ones_like(target_style[...,0], dtype=torch.bool))
+            style_feats = self.style_proj(feat_q_gt) 
+            style_feats = self.pos_enc(style_feats) 
+            style_feats = self.style_frame_encoder(style_feats)    
+            style_vec   = style_feats.mean(dim=1)       
+            style_vec   = F.normalize(style_vec, dim=-1)   
+        else:
+            # fallback: a learnable "neutral" token (could also be zeros)
+            style_vec = torch.zeros(1, self.args.feature_dim, device=self.device, dtype=hidden_states.dtype)
+
+        # autoregressive facial motion prediction
+        for i in range(frame_num):
+            if i==0:
+                blendshapes_emb   = torch.zeros((1,1,self.args.feature_dim)).to(self.device) # (1,1,feature_dim)
+                blendshapes_input = self.pos_enc(blendshapes_emb)
+            else:
+                blendshapes_input = self.pos_enc(blendshapes_emb)
+
+            tgt_mask    = self.biased_mask[:, :blendshapes_input.shape[1], :blendshapes_input.shape[1]].clone().detach().to(device=self.device).squeeze(0)
+            memory_mask = enc_dec_mask(self.device, self.dataset, blendshapes_input.shape[1], hidden_states.shape[1])
+
+            feat_out = self.transformer_decoder(
+                                                tgt=blendshapes_input,
+                                                memory=hidden_states,
+                                                tgt_mask=tgt_mask, 
+                                                memory_mask=memory_mask,
+                                                style   = style_vec,
+                                                )
+
+            feat_out         = self.feat_map(feat_out) # Map the output features to the final feature space (VQAutoencoder 'embedding') 
+            #feat_out_q, _, _ = self.autoencoder.vq(feat_out) # Quantize the embedding
+
+            # Quantized features to blendshapes
+            if i == 0:
+                blendshapes_out_q = self.autoencoder.decode(torch.cat([feat_out, feat_out], dim=1))
+                blendshapes_out_q = blendshapes_out_q[:,0].unsqueeze(1)
+            else:
+                blendshapes_out_q = self.autoencoder.decode(feat_out)
+
+            if i != frame_num - 1:
+                new_output        = self.blendshapes_map(blendshapes_out_q[:,-1,:]).unsqueeze(1)
+                blendshapes_emb   = torch.cat((blendshapes_emb, new_output), 1)
+                
+        # quantization and decoding
+        #feat_out_q, _, _ = self.autoencoder.vq(feat_out)
+        blendshapes_out  = self.autoencoder.decode(feat_out)
+
+        return blendshapes_out
+
 
 
