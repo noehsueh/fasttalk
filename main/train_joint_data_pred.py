@@ -116,7 +116,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # =========== Load checkpoint ===========
     #checkpoint_path = cfg.noninteractive_pretrained_s2_path
-    #checkpoint_path = "/root/Projects/fasttalk/logs/joint_data/joint_data_6k_s2/model_80_hlr/model.pth.tar"
+    #checkpoint_path = "/mnt/fasttalk/logs/joint_data/joint_data_finetune_s2/model_50/model.pth.tar" 
     #print("=> Loading checkpoint '{}'".format(checkpoint_path))
     #checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
     #load_state_dict(model, checkpoint['state_dict'], strict=False)

@@ -115,11 +115,11 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = None
 
     # =========== Load checkpoint ===========
-    #checkpoint_path = "/mnt/fasttalk/logs/joint_data/joint_data_gpose_s2/model_25/model.pth.tar"
-    #print("=> Loading checkpoint '{}'".format(checkpoint_path))
-    #checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
-    #load_state_dict(model, checkpoint['state_dict'], strict=False)
-    #print("=> Loaded checkpoint '{}'".format(checkpoint_path))
+    checkpoint_path = "/mnt/fasttalk/logs/joint_data/joint_data_finetune_s2/model_50/model.pth.tar" 
+    print("=> Loading checkpoint '{}'".format(checkpoint_path))
+    checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage.cpu())
+    load_state_dict(model, checkpoint['state_dict'], strict=False)
+    print("=> Loaded checkpoint '{}'".format(checkpoint_path))
     # =========== End load checkpoint ===========
 
     # ####################### Train ############################# #
@@ -150,10 +150,10 @@ def main_worker(gpu, ngpus_per_node, args):
                             )
             wandb.log({"loss_val": loss_val}, epoch_log)
             
-            save_checkpoint(model,
-                            sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
-                            stage=2
-                            )
+        save_checkpoint(model,
+                        sav_path=os.path.join(cfg.save_path, 'model_'+str(epoch_log)),
+                        stage=2
+                        )
 
 def train(train_loader, model, loss_fn, optimizer, epoch, cfg):
     batch_time = AverageMeter()

@@ -393,7 +393,7 @@ class CodeTalker(BaseModel):
         feat_out = self.transformer_decoder(
                                                 tgt=emb_blendshapes_tgt,
                                                 memory=hidden_states,
-                                                style=style_vec,               # ← pass style once
+                                                style=style_vec,               #  pass style once
                                                 tgt_mask=tgt_mask,
                                                 memory_mask=memory_mask,
                                                 tgt_key_padding_mask=~blendshapes_mask,

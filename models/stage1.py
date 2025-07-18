@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from vector_quantize_pytorch import VectorQuantize, GroupedResidualVQ, LFQ
 import math
+import time
 
 class PositionalEncoding(nn.Module):
     def __init__(self, dim, dropout=0.1, max_len=6000):
@@ -60,6 +61,80 @@ class VQAutoEncoder(nn.Module):
 
         # Output projection
         self.decoder_proj = nn.Linear(hidden_dim, input_dim)
+    
+    # ───────────────────────────────────────────────────────── helpers ── #
+    @staticmethod
+    def _record(label, start_evt, end_evt, cpu_t0, times, use_gpu):
+        """Store elapsed time (ms) for one segment."""
+        if use_gpu:
+            end_evt.record()
+            torch.cuda.synchronize()
+            elapsed = start_evt.elapsed_time(end_evt)          # already ms
+        else:
+            elapsed = (time.perf_counter() - cpu_t0) * 1_000   # s → ms
+        times[label] = elapsed
+
+    def _new_timer(self, use_gpu):
+        """Return (start_event, end_event, cpu_start_time)."""
+        if use_gpu:
+            start_evt = torch.cuda.Event(enable_timing=True)
+            end_evt   = torch.cuda.Event(enable_timing=True)
+            start_evt.record()
+            return start_evt, end_evt, None
+        else:
+            return None, None, time.perf_counter()
+
+
+    # ───────────────────────────────────────────────────────── forward ── #
+    def forward_time(self, blendshapes, mask=None):
+        times   = {}
+        use_gpu = blendshapes.is_cuda
+
+        # 1. encoder projection
+        st, ed, t0 = self._new_timer(use_gpu)
+        x = self.encoder_proj(blendshapes)
+        self._record('encoder_proj', st, ed, t0, times, use_gpu)
+
+        # 2. positional encoding
+        st, ed, t0 = self._new_timer(use_gpu)
+        x = self.pos_enc(x)
+        self._record('pos_enc', st, ed, t0, times, use_gpu)
+
+        # 3. encoder transformer
+        st, ed, t0 = self._new_timer(use_gpu)
+        x = self.encoder_transformer(
+                x,
+                src_key_padding_mask=~mask if mask is not None else None
+            )
+        self._record('encoder_transformer', st, ed, t0, times, use_gpu)
+
+        # 4. vector quantiser
+        st, ed, t0 = self._new_timer(use_gpu)
+        quantized, _, vq_loss = self.vq(x)
+        self._record('vector_quantize', st, ed, t0, times, use_gpu)
+
+        # 5. decoder transformer
+        st, ed, t0 = self._new_timer(use_gpu)
+        x = self.decoder_transformer(
+                quantized,
+                src_key_padding_mask=~mask if mask is not None else None
+            )
+        self._record('decoder_transformer', st, ed, t0, times, use_gpu)
+
+        # 6. output projection
+        st, ed, t0 = self._new_timer(use_gpu)
+        decoded = self.decoder_proj(x)
+        self._record('decoder_proj', st, ed, t0, times, use_gpu)
+
+        # ─── pretty print ─────────────────────────────────────────────── #
+        print("│  step                    │   time (ms)")
+        print("├──────────────────────────┼────────────")
+        for k, v in times.items():
+            print(f"│ {k:<24}│ {v:10.3f}")
+        print("└──────────────────────────┴────────────\n")
+
+        return decoded, vq_loss
+    
 
     def forward(self, blendshapes, mask=None):
         # blendshapes: [B, T, 58]
