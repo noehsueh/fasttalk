@@ -361,6 +361,7 @@ class CodeTalker(BaseModel):
         valid_audio_lens = torch.clamp(frame_num * 2, max=T_audio)  # [B], per-sample audio length
         time_range_audio = torch.arange(T_audio, device=hidden_states.device).unsqueeze(0)  # [1, T_audio]
         memory_key_padding_mask = time_range_audio >= valid_audio_lens.unsqueeze(1)  # [B, T_audio]
+
         # ========== AUDIO FEATURES EXTRACTION ==========
 
         # ── Style ──────────────────────────────────────────────────────
@@ -370,6 +371,7 @@ class CodeTalker(BaseModel):
         (view1, m1), (view2, m2) = self._make_two_views(feat_q_gt.detach(), blendshapes_mask)
         style_a = self._style_view(view1, m1)          # [B, D]
         style_b = self._style_view(view2, m2)          # [B, D]
+
 
         # pick one view (or their average) for conditioning
         style_vec = (style_a + style_b) * 0.5          

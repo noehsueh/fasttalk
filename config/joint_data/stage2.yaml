@@ -40,12 +40,11 @@ PREDICTOR:
   blendshapes_dim: 58
   device: cuda
   period: 25
-  vqvae_pretrained_path: /mnt/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar
+  vqvae_pretrained_path: /mnt/fasttalk/logs/joint_data/joint_data_s1_moods/model_30/model.pth.tar #/mnt/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar
   wav2vec2model_path: utter-project/mHuBERT-147 # facebook/wav2vec2-large-xlsr-53  
   teacher_forcing: True
   num_layers: 4 # 6
   n_head: 4 # 4
-
 
 TRAIN:
   use_sgd: False

@@ -106,12 +106,12 @@ def read_data(args, test_config=False):
     for tt in test_lines:
         test_list.append(tt.split("\n")[0])
 
-    counter = 0
+    #counter = 0
     frames_count = 0
     for r, ds, fs in os.walk(audio_path):
 
         for f in tqdm(fs):
-            counter += 1
+            #counter += 1
             # Activate when testing the model
             if test_config and f not in test_list:
                 continue
@@ -128,32 +128,22 @@ def read_data(args, test_config=False):
                     flame_param = np.load(blendshapes_path, allow_pickle=True)
 
                     # Discard sequences with more than 600 frames (too large for training)
-                    if 'pose' in flame_param and (flame_param["exp"].shape[0] > 350 or flame_param["exp"].shape[0] < 8):
-                        continue
-                    elif 'pose_params' in flame_param and (flame_param["expression_params"].shape[0] > 350 or flame_param["expression_params"].shape[0] < 8):
-                        continue
-                    elif 'gpose' in flame_param and (flame_param["exp"].shape[0] > 350 or flame_param["exp"].shape[0] < 8):
-                        continue
-                    else:
-                        if 'pose' in flame_param:
-                            expr   = flame_param["exp"].reshape(-1,50)
-                            jaw    = flame_param["pose"][:,3:6].reshape(-1,3)
-                            gpose  = flame_param["pose"][:,0:3].reshape(-1,3)
-                            gpose  = gpose - gpose.mean(axis=0, keepdims=True)
-                            # Apply Savitzky-Golay filter along the time axis (axis=0)
-                        elif 'pose_params' in flame_param:
-                            expr   = flame_param['expression_params'].reshape(-1, 50)
-                            jaw    = flame_param["jaw_params"].reshape(-1, 3)
-                            gpose  = flame_param["pose_params"].reshape(-1, 3)
-                            gpose  = gpose - gpose.mean(axis=0, keepdims=True)
-                        else:
-                            expr    = flame_param["exp"].reshape((flame_param["exp"].shape[0], -1))
-                            gpose   = flame_param["gpose"].reshape((flame_param["gpose"].shape[0], -1))
-                            jaw     = flame_param["jaw"].reshape((flame_param["jaw"].shape[0], -1))
+                    #if 'pose' in flame_param and (flame_param["exp"].shape[0] > 350 or flame_param["exp"].shape[0] < 8):
+                    #    continue
+                    #elif 'pose_params' in flame_param and (flame_param["expression_params"].shape[0] > 350 or flame_param["expression_params"].shape[0] #< 8):
+                    #    continue
+                    #elif 'gpose' in flame_param and (flame_param["exp"].shape[0] > 350 or flame_param["exp"].shape[0] < 8):
+                    #    continue
+                    #else:
+
+                    try:
+                        expr   = flame_param['exp'].reshape(-1, 50)
+                        jaw    = flame_param['jaw'].reshape(-1,3)
+                        gpose  = flame_param['pose'].reshape(-1, 3)
+                        gpose  = gpose - gpose.mean(axis=0, keepdims=True)
 
                         # Apply Savitzky-Golay filter along the time axis for gpose (removes tracker's flickering) (axis=0)
                         gpose = savgol_filter(gpose, window_length=7, polyorder=2, axis=0)
-
                         
                         # Compute vertices for supervision in vq training
                         exp_tensor    = torch.Tensor(expr)
@@ -161,9 +151,8 @@ def read_data(args, test_config=False):
                         gpose_tensor  = torch.Tensor(gpose)
                         eyelids_tensor = torch.ones((exp_tensor.shape[0], 2)) # Not tracked in all datasets, so we use a placeholder
 
-                        s = torch.empty(1).uniform_(3.0, 4.0)
+                        s = torch.empty(1).uniform_(3.0, 4.0) # Headpose exageration factor
                         gpose_tensor *= s
-
                         
                         concat_blendshapes = np.concatenate((exp_tensor.numpy(), gpose_tensor.numpy(), jaw_tensor.numpy(), eyelids_tensor.numpy()), axis=1)
 
@@ -182,9 +171,12 @@ def read_data(args, test_config=False):
 
                             input_audio_features = np.squeeze(processor(speech_array, sampling_rate=16000).input_values)
                             data[key]["audio"]   = input_audio_features
+                    except Exception as e:
+                        print("Error loading data for {}. Skipping.".format(blendshapes_path))
+                        continue
 
-            if counter > 1000:
-                break
+            #if counter > 1000:
+            #    break
                    
     subjects_dict = {}
     subjects_dict["train"] = [i for i in args.train_subjects.split(" ")]

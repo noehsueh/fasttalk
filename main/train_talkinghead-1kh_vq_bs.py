@@ -81,16 +81,16 @@ def main_worker(gpu, ngpus_per_node, args):
         model = model.cuda()
 
     # ####################### Load Pretrained ####################### #
-    pretrained_checkpoint_path = "/mnt/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar"
-    pretrained_vq_checkpoint = torch.load(pretrained_checkpoint_path)
+    #pretrained_checkpoint_path = "/mnt/fasttalk/logs/joint_data/joint_data_custom_s1/model_170_50k/model.pth.tar"
+    #pretrained_vq_checkpoint = torch.load(pretrained_checkpoint_path)
 
-    if "state_dict" in pretrained_vq_checkpoint:
-        model.load_state_dict(pretrained_vq_checkpoint["state_dict"])
-    else:
-        model.load_state_dict(pretrained_vq_checkpoint,map_location=lambda storage, loc: storage.cpu())
+    #if "state_dict" in pretrained_vq_checkpoint:
+    #    model.load_state_dict(pretrained_vq_checkpoint["state_dict"])
+    #else:
+    #    model.load_state_dict(pretrained_vq_checkpoint,map_location=lambda storage, loc: storage.cpu())
 
-    print("Loaded pretrained model from: ", pretrained_checkpoint_path)
-    print("Starting fine-tuning...")
+    #print("Loaded pretrained model from: ", pretrained_checkpoint_path)
+    #print("Starting fine-tuning...")
 
     # ####################### Optimizer ####################### #
     if cfg.use_sgd:
@@ -105,7 +105,7 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler = None
 
     # ####################### Data Loader ####################### #
-    from dataset.data_loader_joint_data_batched import get_dataloaders
+    from dataset.data_loader_fasttalk import get_dataloaders
     dataset = get_dataloaders(cfg)
     train_loader = dataset['train']
     if cfg.evaluate:

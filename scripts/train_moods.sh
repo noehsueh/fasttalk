@@ -21,11 +21,11 @@ if [ "${stage}" = "s1" ]; then
     echo "Training for Discrete Motion Prior"
 elif [ "${stage}" = "s2interactive" ]; then
     echo "TRAINING STAGE 2 INTERACTIVE MODE" 
-    TRAIN_CODE=train_joint_data_pred_interactive.py
+    TRAIN_CODE=train_artalk_interactive.py
     echo "Training for Speech-Driven Motion Synthesis (Interactive)"
 else
     echo "TRAINING STAGE 2" 
-    TRAIN_CODE=train_joint_data_pred_bs.py
+    TRAIN_CODE=train_moods_pred_bs.py
     #TEST_CODE=test_artalk_pred.py
     echo "Training for Speech-Driven Motion Synthesis"
 fi
