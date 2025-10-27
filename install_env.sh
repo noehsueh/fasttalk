@@ -51,15 +51,16 @@ set -u
 log "Upgrading pip…"
 pip install --quiet --upgrade pip
 
-log "Installing MPI-IS mesh library…"
-pip install git+https://github.com/MPI-IS/mesh.git
+# log "Installing MPI-IS mesh library…"
+# pip install git+https://github.com/MPI-IS/mesh.git
 
-log "Installing PyTorch (default CUDA wheel)…"
-pip install torch torchvision torchaudio
 
 log "Installing ffmpeg, CUDA 12.6 toolkit and ninja…"
 conda_safe install -y -c conda-forge ffmpeg
 conda_safe install -y -c "nvidia/label/cuda-12.6" cuda-toolkit ninja
+
+log "Installing PyTorch (default CUDA wheel)…"
+pip install torch torchvision torchaudio
 
 ln -sf "$CONDA_PREFIX/lib" "$CONDA_PREFIX/lib64"          # lib → lib64
 conda env config vars set CUDA_HOME="$CONDA_PREFIX"
@@ -73,10 +74,11 @@ set -u
 ###############################################################################
 # 3. Remaining Python deps
 log "Installing PyTorch3D (may compile from source)…"
-pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+# pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+pip install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git"
 
 log "Installing miscellaneous packages…"
-pip install tensorboardX einops scipy librosa tqdm \
+pip install --no-build-isolation tensorboardX einops scipy librosa tqdm \
             sympy==1.13.1 transformers \
             trimesh pyrender pyopengl pyglet opencv-python \
             pyyaml scikit-image wandb matplotlib \
@@ -95,16 +97,18 @@ FLAME_ZIP="$FLAME_DIR/flame_model.zip"
 FLAME_URL="1dgDWQB9hbGMrQMTVhIv32s3WZmq1CzbZ"
 
 
-
-
 mkdir -p "$FLAME_DIR"
 if [[ ! -d "$FLAME_DIR/assets" ]]; then
     log "Downloading FLAME assets (≈150 MB)…"
-    python - <<'PY'
-import importlib.util, subprocess, sys
-if importlib.util.find_spec("gdown") is None:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "gdown"])
-PY  
+
+    # Check if gdown command exists, install if not
+    if ! command -v gdown &> /dev/null; then
+        log "gdown not found, installing..."
+        # Using python -m pip is robust, just like your original script
+        python -m pip install --quiet gdown
+    fi
+
+    # Proceed with download and unzip
     gdown --id "$FLAME_URL" -O "$FLAME_ZIP"
     log "Unzipping FLAME…"
     unzip -q "$FLAME_ZIP" -d "$FLAME_DIR"
@@ -112,20 +116,12 @@ PY
 else
     warn "flame already exists - skipping download."
 fi
-
 ###############################################################################
 # 5. Patches: transformers & Chumpy
-SITEPKG=$(python - <<'PY'
-import sysconfig; print(sysconfig.get_paths()["purelib"])
-PY)
+SITEPKG=$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
 
 # ── Wav2Vec2 tokenizer patch ────────────────────────────────────────────────
-W2V_FILE=$(python - <<'PY'
-from importlib.util import find_spec
-import pathlib
-spec = find_spec("transformers.models.wav2vec2.processing_wav2vec2")
-print(pathlib.Path(spec.origin))
-PY)
+W2V_FILE=$(python -c "from importlib.util import find_spec; import pathlib; spec = find_spec('transformers.models.wav2vec2.processing_wav2vec2'); print(pathlib.Path(spec.origin))")
 
 log "Patching transformers (processing_wav2vec2.py)…"
 sed -i.bak \
