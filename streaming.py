@@ -100,6 +100,47 @@ class FileAudioSource(AudioSource):
         return chunk
 
 
+class LiveAudioSource(AudioSource):
+    """Receives live audio chunks and serves fixed-size frames."""
+
+    def __init__(self, chunk_ms=40, sr=16000):
+        self.sr = sr
+        self.chunk_size = int(sr * chunk_ms / 1000)
+        self.queue = queue.Queue()
+        self._residual = np.zeros(0, np.float32)
+        self._closed = False
+
+    def start(self):
+        pass
+
+    def push_chunk(self, chunk, sr):
+        if chunk is None:
+            return
+        if chunk.ndim > 1:
+            chunk = chunk.mean(axis=1)
+        chunk = np.asarray(chunk, np.float32)
+        if sr != self.sr:
+            chunk = librosa.resample(chunk, orig_sr=sr, target_sr=self.sr)
+        print(f"[LiveAudioSource] chunk of shape {chunk.shape}")
+        chunk = np.concatenate([self._residual, chunk]) if self._residual.size else chunk
+        while len(chunk) >= self.chunk_size:
+            frame, chunk = chunk[: self.chunk_size], chunk[self.chunk_size :]
+            try:
+                self.queue.put_nowait(frame)
+            except queue.Full:
+                self.queue.get_nowait()
+                self.queue.put_nowait(frame)
+        self._residual = chunk
+
+
+    def get_chunk(self) -> Optional[np.ndarray]:
+        item = self.queue.get()
+        return None if item is None else item
+
+    def stop(self):
+        self._closed = True
+        self.queue.put(None)
+
 # ════════════════════════════════════════════════════════════════
 # AudioBuffer
 # ════════════════════════════════════════════════════════════════
@@ -424,6 +465,11 @@ class StreamingPipeline:
             
     def stop(self):
         self.stop_event.set()
+        if hasattr(self.audio_source, "stop"):
+            try:
+                self.audio_source.stop()
+            except Exception:
+                pass
         for t in self.threads:
             t.join()
 
@@ -448,63 +494,157 @@ def main_gradio():
     STYLE_DIR = "demo/styles"
     styles = sorted(f[:-4] for f in os.listdir(STYLE_DIR) if f.endswith(".npz"))
     
-    def run_stream(audio_path, style_name):
-        if not audio_path:
-            return None
+    from collections import deque
 
-        # Prepare components
-        audio_source = FileAudioSource(audio_path, chunk_ms=40)
+    def init_pipeline(style_name):
+        audio_source = LiveAudioSource(chunk_ms=40)
         audio_buffer = AudioBuffer(chunk_ms=40, max_duration_ms=5000)
         feature_generator = FeatureGenerator(device="cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Load style
+
         style_fp = os.path.join(STYLE_DIR, style_name + ".npz")
         style_t = torch.load(style_fp, map_location=DEVICE)
-        
-        # Create Model Wrapper
+
         bs_model = BlendshapeModel(fasttalk_model, style_t)
-        
-        # Output queue for images
+
         image_queue = queue.Queue()
         renderer = OnlineRenderer(image_queue)
-        
-        # Pipeline
+
         pipeline = StreamingPipeline(
             audio_source, audio_buffer, feature_generator, bs_model, renderer
         )
-        
         pipeline.start_non_blocking()
-        
-        # Yield images from queue
+
+        return {
+            "audio_source": audio_source,
+            "pipeline": pipeline,
+            "image_queue": image_queue,
+            "style_name": style_name,
+            "frame_buffer":deque(),
+            "started": False,
+        }
+
+    def on_audio_stream(audio, style_name, state):
+        if audio is None:
+            if state is not None:
+                state["pipeline"].stop()
+            return gr.update(), None
+        if style_name is None:
+            return gr.update(), state
+
+        if state is None or state.get("style_name") != style_name:
+            if state is not None:
+                state["pipeline"].stop()
+            state = init_pipeline(style_name)
+
+        sr, samples = audio
+        state["audio_source"].push_chunk(samples, sr)
+
+        frame = None
         while True:
             try:
-                # wait slightly for next frame
-                img = image_queue.get(timeout=1.0) 
+                state["frame_buffer"].append(state["image_queue"].get_nowait())
+                # frame = state["image_queue"].get_nowait()
+                # state['last_frame'] = frame
+            except queue.Empty:
+                break
+        
+        MIN_START_FRAMES = 3
+        if not state["started"]:
+            if len(state["frame_buffer"]) >= MIN_START_FRAMES:
+                state["started"] = True
+            else:
+                # not enough buffered yet: show last frame (or None)
+                return state.get("last_frame", None), state
+        
+        frame = state["frame_buffer"].popleft() if len(state["frame_buffer"]) > 0 else None
+        state['last_frame'] = frame
+        if frame is None:
+            return state.get('last_frame', None), state
+        return frame, state
+
+
+    def run_file_stream(audio_path, style_name):
+        if not audio_path or style_name is None:
+            return None
+
+        audio_source = FileAudioSource(audio_path, chunk_ms=40)
+        audio_buffer = AudioBuffer(chunk_ms=40, max_duration_ms=5000)
+        feature_generator = FeatureGenerator(device="cuda" if torch.cuda.is_available() else "cpu")
+
+        style_fp = os.path.join(STYLE_DIR, style_name + ".npz")
+        style_t = torch.load(style_fp, map_location=DEVICE)
+
+        bs_model = BlendshapeModel(fasttalk_model, style_t)
+
+        image_queue = queue.Queue()
+        renderer = OnlineRenderer(image_queue)
+
+        pipeline = StreamingPipeline(
+            audio_source, audio_buffer, feature_generator, bs_model, renderer
+        )
+
+        pipeline.start_non_blocking()
+
+        while True:
+            try:
+                img = image_queue.get(timeout=1.0)
                 if img is None:
                     break
                 yield img
             except queue.Empty:
-                # If pipeline threads are dead, break
                 if not any(t.is_alive() for t in pipeline.threads):
                     break
                 continue
-                
-        pipeline.stop()
 
+        pipeline.stop()
 
     with gr.Blocks(title="fasTTalk Live Streaming") as demo:
         gr.Markdown("### fasTTalk Live - Streaming Pipeline Demo")
-        
-        with gr.Row():
-            with gr.Column():
-                audio_in = gr.Audio(type="filepath", label="Input Audio")
-                style_dd = gr.Dropdown(choices=styles, value=styles[0] if styles else None, label="Style")
-                btn = gr.Button("Stream Generation")
-            
-            with gr.Column():
-                out_image = gr.Image(label="Live Stream", streaming=True)
-        
-        btn.click(run_stream, inputs=[audio_in, style_dd], outputs=[out_image])
+
+        with gr.Tabs():
+            with gr.TabItem("Microphone"):
+                state = gr.State(None)
+
+                with gr.Row():
+                    with gr.Column():
+                        audio_in = gr.Audio(
+                            sources=["microphone"],
+                            streaming=True,
+                            type="numpy",
+                            label="Microphone",
+                        )
+                        style_dd = gr.Dropdown(choices=styles, value=styles[0] if styles else None, label="Style")
+
+                    with gr.Column():
+                        out_image = gr.Image(label="Live Stream", streaming=True)
+
+                audio_in.stream(
+                    on_audio_stream,
+                    inputs=[audio_in, style_dd, state],
+                    outputs=[out_image, state],
+                    stream_every=0.04, # 40ms
+                    time_limit=30,
+                )
+
+            with gr.TabItem("File"):
+                with gr.Row():
+                    with gr.Column():
+                        audio_file = gr.Audio(
+                            sources=["upload","microphone"],
+                            type="filepath",
+                            label="Input Audio",
+                        )
+                        style_dd_file = gr.Dropdown(choices=styles, value=styles[0] if styles else None, label="Style")
+                        btn = gr.Button("Stream File")
+
+                    with gr.Column():
+                        out_image_file = gr.Image(label="File Stream", streaming=True)
+
+                btn.click(
+                    run_file_stream,
+                    inputs=[audio_file, style_dd_file],
+                    outputs=[out_image_file],
+                )
 
     demo.launch(server_name="0.0.0.0")
 
