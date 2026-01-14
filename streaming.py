@@ -121,7 +121,6 @@ class LiveAudioSource(AudioSource):
         chunk = np.asarray(chunk, np.float32)
         if sr != self.sr:
             chunk = librosa.resample(chunk, orig_sr=sr, target_sr=self.sr)
-        print(f"[LiveAudioSource] chunk of shape {chunk.shape}")
         chunk = np.concatenate([self._residual, chunk]) if self._residual.size else chunk
         while len(chunk) >= self.chunk_size:
             frame, chunk = chunk[: self.chunk_size], chunk[self.chunk_size :]
@@ -217,6 +216,7 @@ class BlendshapeModel:
 
         self.past_blendshapes = torch.zeros(1,1,1024).to(self.device)
         self.memory = None
+        self.max_blendshape_len = 600 # biased mask size
 
     def _compute_style_vector(self):
         feat_q_gt, _, encoded = self.model.autoencoder.get_quant(self.style_t, torch.ones_like(self.style_t[...,0], dtype=torch.bool))
@@ -226,6 +226,18 @@ class BlendshapeModel:
         style_vec   = style_feats.mean(dim=1)       
         style_vec   = F.normalize(style_vec, dim=-1)   #[B, 1024]
         self.style_vector = style_vec
+    
+    def _remove_past_context(self):
+        # por cada embedding tengo 2 frames de memoria/audio
+        # when tgt_mask size exceeds max len, remove past context 100 frames
+        frames_to_remove = 100
+        memory_frames_to_remove = frames_to_remove * 2
+        if self.past_blendshapes.size(1) > self.max_blendshape_len:
+            print(f"[BlendshapeModel] Removing past context")
+            print(f'Before removing shapes size: {self.past_blendshapes.size()}, memory size: {self.memory.size()}')
+            self.past_blendshapes = self.past_blendshapes[:, frames_to_remove:, :].detach()
+            self.memory = self.memory[:, memory_frames_to_remove:, :].detach()
+            print(f'After removing shapes size: {self.past_blendshapes.size()}, memory size: {self.memory.size()}')
 
     @torch.no_grad()
     def predict(self, features: torch.Tensor) -> torch.Tensor:
@@ -240,6 +252,8 @@ class BlendshapeModel:
             [self.memory, hidden_state], dim=1
         ) if self.memory is not None else hidden_state
 
+        self._remove_past_context()
+        
         # pos encode blendshapes_input 
         blendshapes_input = self.model.pos_enc(self.past_blendshapes) # [1, T, 1024]
         
@@ -427,17 +441,17 @@ class StreamingPipeline:
 
     def _inference_thread(self):
         print("[Inference] Starting...")
-        try:
-            while not self.stop_event.is_set():
-                features = self.feature_queue.get()
-                if features is None:
-                    self.blendshape_queue.put(None)
-                    break
-                blendshapes = self.blendshape_model.predict(features)
-                self.blendshape_queue.put(blendshapes)
-        except Exception as e:
-            print(f"[Inference] Error: {e}")
-            self.blendshape_queue.put(None)
+        # try:
+        while not self.stop_event.is_set():
+            features = self.feature_queue.get()
+            if features is None:
+                self.blendshape_queue.put(None)
+                break
+            blendshapes = self.blendshape_model.predict(features)
+            self.blendshape_queue.put(blendshapes)
+        # except Exception as e:
+        #     print(f"[Inference] Error: {e}")
+        #     self.blendshape_queue.put(None)
 
     def _render_thread(self):
         print("[Render] Starting...")
@@ -512,7 +526,7 @@ def main_gradio():
         pipeline = StreamingPipeline(
             audio_source, audio_buffer, feature_generator, bs_model, renderer
         )
-        pipeline.start_non_blocking()
+        #pipeline.start_non_blocking()
 
         return {
             "audio_source": audio_source,
@@ -523,18 +537,22 @@ def main_gradio():
             "started": False,
         }
 
-    def on_audio_stream(audio, style_name, state):
+    def on_audio_stream(audio, state):
         if audio is None:
             if state is not None:
                 state["pipeline"].stop()
             return gr.update(), None
-        if style_name is None:
-            return gr.update(), state
+        # if style_name is None:
+        #     return gr.update(), state
 
-        if state is None or state.get("style_name") != style_name:
-            if state is not None:
-                state["pipeline"].stop()
-            state = init_pipeline(style_name)
+        if state['started'] is False:
+            state["pipeline"].start_non_blocking()
+            state['started'] = True
+
+        # if state is None or state.get("style_name") != style_name:
+        #     if state is not None:
+        #         state["pipeline"].stop()
+        #     state = init_pipeline(style_name)
 
         sr, samples = audio
         state["audio_source"].push_chunk(samples, sr)
@@ -561,6 +579,13 @@ def main_gradio():
         if frame is None:
             return state.get('last_frame', None), state
         return frame, state
+
+    def apply_style(style_name, state):
+        if state is not None:
+            state['pipeline'].stop()
+        
+        new_state = init_pipeline(style_name)
+        return new_state, gr.update(visible=True, interactive=True)
 
 
     def run_file_stream(audio_path, style_name):
@@ -607,23 +632,34 @@ def main_gradio():
 
                 with gr.Row():
                     with gr.Column():
+                        style_dd = gr.Dropdown(choices=styles, value=styles[0] if styles else None, label="Style")
+                        init_button = gr.Button("Load Fasttalk and style")
                         audio_in = gr.Audio(
                             sources=["microphone"],
                             streaming=True,
                             type="numpy",
                             label="Microphone",
+                            interactive=False, # start disabled until pipeline init
+                            visible=False,
                         )
-                        style_dd = gr.Dropdown(choices=styles, value=styles[0] if styles else None, label="Style")
-
                     with gr.Column():
                         out_image = gr.Image(label="Live Stream", streaming=True)
 
+                init_button.click(
+                    fn = apply_style,
+                    inputs = [style_dd, state],
+                    outputs = [state, audio_in],
+                )
+                if state is not None:
+                    # enable interactive
+                    audio_in.interactive = True
+
                 audio_in.stream(
                     on_audio_stream,
-                    inputs=[audio_in, style_dd, state],
+                    inputs=[audio_in, state],
                     outputs=[out_image, state],
                     stream_every=0.04, # 40ms
-                    time_limit=30,
+                    time_limit=60,
                 )
 
             with gr.TabItem("File"):
