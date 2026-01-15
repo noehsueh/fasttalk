@@ -81,7 +81,7 @@ def pipeline(audio_fp, style_name):
 
     # 3. predict blendshapes
     with torch.no_grad():
-        bs = model.predict(feats, target_style=style_t).squeeze(0)
+        bs = model.predict_no_quantizer(feats, target_style=style_t).squeeze(0)
 
     # 4. save .npz
     name = os.path.splitext(os.path.basename(audio_fp))[0]
@@ -132,7 +132,7 @@ with gr.Blocks(title="fasTTalk demo") as demo:
         # right-bottom: .npz download
         npz_file = gr.File(label="Download blendshapes (.npz)")
 
-    # Callbacks
+    # Callbacksnpz_file
     style_radio.change(lambda s: gr.update(value=preview_path(s)),
                        inputs=style_radio, outputs=style_prev)
 
