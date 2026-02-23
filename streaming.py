@@ -13,6 +13,9 @@ import queue
 import threading
 import time
 import os
+import shutil
+import subprocess
+import tempfile
 import yaml
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -22,6 +25,7 @@ import numpy as np
 import librosa
 import torch
 import torch.nn.functional as F
+import torchaudio.functional as AF
 import gradio as gr 
 from pytorch3d.transforms import matrix_to_euler_angles
 
@@ -36,6 +40,8 @@ from renderer.renderer import Renderer
 # Configuration / Global Setup
 # ════════════════════════════════════════════════════════════════
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+STREAM_OUT_DIR = "demo/video"
+os.makedirs(STREAM_OUT_DIR, exist_ok=True)
 
 # Load FLAME and Renderer globally to avoid reloading per run
 def load_flame_and_renderer():
@@ -68,9 +74,10 @@ class AudioSource(ABC):
 class FileAudioSource(AudioSource):
     """Reads audio from a wav file and returns 40ms chunks sequentially"""
 
-    def __init__(self, wav_path: str, chunk_ms: int = 40):
+    def __init__(self, wav_path: str, chunk_ms: int = 40, pad_last_chunk: bool = False):
         self.wav_path = wav_path
         self.chunk_ms = chunk_ms
+        self.pad_last_chunk = pad_last_chunk
         self.audio = None
         self.sr = 16000  # Target sample rate
         self.chunk_size = None
@@ -94,7 +101,8 @@ class FileAudioSource(AudioSource):
         self.position = end_pos
 
         # Pad last chunk if needed
-        if len(chunk) < self.chunk_size:
+        if len(chunk) < self.chunk_size and self.pad_last_chunk:
+            print(f"[FileAudioSource] Last chunk {len(chunk)} samples, padding to {self.chunk_size}")
             chunk = np.pad(chunk, (0, self.chunk_size - len(chunk)))
 
         return chunk
@@ -103,33 +111,42 @@ class FileAudioSource(AudioSource):
 class LiveAudioSource(AudioSource):
     """Receives live audio chunks and serves fixed-size frames."""
 
-    def __init__(self, chunk_ms=40, sr=16000):
+    def __init__(self, chunk_ms=40, sr=16000, resample_mode='torch'):
         self.sr = sr
         self.chunk_size = int(sr * chunk_ms / 1000)
         self.queue = queue.Queue()
         self._residual = np.zeros(0, np.float32)
         self._closed = False
+        self._resample_mode = resample_mode  # or 'librosa'
+        self._lock = threading.Lock()
 
     def start(self):
         pass
+    
+    def _resample(self, chunk, orig_sr):
+        if self._resample_mode == 'torch':
+            return AF.resample(torch.from_numpy(chunk), orig_sr, self.sr).numpy()
+        else:
+            return librosa.resample(chunk, orig_sr=orig_sr, target_sr=self.sr)
 
     def push_chunk(self, chunk, sr):
-        if chunk is None:
-            return
-        if chunk.ndim > 1:
-            chunk = chunk.mean(axis=1)
-        chunk = np.asarray(chunk, np.float32)
-        if sr != self.sr:
-            chunk = librosa.resample(chunk, orig_sr=sr, target_sr=self.sr)
-        chunk = np.concatenate([self._residual, chunk]) if self._residual.size else chunk
-        while len(chunk) >= self.chunk_size:
-            frame, chunk = chunk[: self.chunk_size], chunk[self.chunk_size :]
-            try:
-                self.queue.put_nowait(frame)
-            except queue.Full:
-                self.queue.get_nowait()
-                self.queue.put_nowait(frame)
-        self._residual = chunk
+        with self._lock:
+            if chunk is None:
+                return
+            if chunk.ndim > 1:
+                chunk = chunk.mean(axis=1)
+            chunk = np.asarray(chunk, np.float32)
+            if sr != self.sr:
+                chunk = self._resample(chunk, orig_sr=sr)
+            chunk = np.concatenate([self._residual, chunk]) if self._residual.size else chunk
+            while len(chunk) >= self.chunk_size:
+                frame, chunk = chunk[: self.chunk_size], chunk[self.chunk_size :]
+                try:
+                    self.queue.put_nowait(frame)
+                except queue.Full:
+                    self.queue.get_nowait()
+                    self.queue.put_nowait(frame)
+            self._residual = chunk
 
 
     def get_chunk(self) -> Optional[np.ndarray]:
@@ -157,6 +174,7 @@ class AudioBuffer:
     def add_chunk(self, chunk: np.ndarray):
         self.buffer = np.concatenate([self.buffer, chunk])
         if len(self.buffer) > self.max_samples:
+            print(f"[AudioBuffer] Buffer exceeded max duration, trimming...")
             self.buffer = self.buffer[-self.max_samples:]
 
     def get_audio(self) -> np.ndarray:
@@ -181,6 +199,8 @@ class FeatureGenerator:
         self.device = device
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
         self.audio_encoder = Wav2Vec2Model.from_pretrained(model_name)
+        # wav2vec 2.0 weights initialization
+        self.audio_encoder.feature_extractor._freeze_parameters()   
         self.audio_encoder.to(device)
         self.audio_encoder.eval()
         print(f"[FeatureGenerator] Loaded {model_name}")
@@ -204,6 +224,7 @@ class BlendshapeModel:
 
     def __init__(self, fasttalk_model: torch.nn.Module, style_t: Optional[torch.Tensor] = None):
         self.model = fasttalk_model
+        self.model.eval()
         self.style_t = style_t
         self.device = DEVICE
         
@@ -240,14 +261,15 @@ class BlendshapeModel:
             print(f'After removing shapes size: {self.past_blendshapes.size()}, memory size: {self.memory.size()}')
 
     @torch.no_grad()
-    def predict(self, features: torch.Tensor) -> torch.Tensor:
+    def predict(self, features: torch.Tensor, debug: bool = False) -> torch.Tensor:
         # assert features is [..., 2,...]
         if features.shape[1] != 2:
              print(f"[Warning] Predicted expected 2 frames, got {features.shape[1]}")
              
-        hidden_state = self.model.audio_feature_map(features) # [1, 2, 1024]
+        hidden_state = self.model.audio_feature_map(features) 
 
         # add current audio frame to memory
+        is_first_frame = self.memory is None
         self.memory = torch.cat(
             [self.memory, hidden_state], dim=1
         ) if self.memory is not None else hidden_state
@@ -281,7 +303,14 @@ class BlendshapeModel:
         feat_out = self.model.feat_map(feat_out)
 
         # decode to blendshapes
-        bs_out_q = self.model.autoencoder.decode(feat_out)
+        # first frame boostrap
+        if is_first_frame:
+            bs_out_q = self.model.autoencoder.decode(
+                torch.cat([feat_out, feat_out], dim=1)
+            )
+            bs_out_q = bs_out_q[:, 0].unsqueeze(1)  
+        else:
+            bs_out_q = self.model.autoencoder.decode(feat_out)
         blendshapes = bs_out_q[:,-1,:]
 
         # update internal state
@@ -290,7 +319,8 @@ class BlendshapeModel:
         self.past_blendshapes = torch.cat(
             [self.past_blendshapes, blendshape_emb], dim=1
         ).detach()
-
+        if debug:
+            return blendshapes, feat_out
         return blendshapes
 
     def reset(self):
@@ -310,17 +340,21 @@ class OnlineRenderer:
         self.output_queue = output_queue
         self.frame_count = 0
         self.device = DEVICE
+        self.cam = torch.tensor([5, 0, 0], dtype=torch.float32, device=self.device).expand(1, -1)
+        self.eye = matrix_to_euler_angles(torch.eye(3)[None], "XYZ").to(self.device)
+        self.shp = torch.zeros(1, 300, device=self.device)
 
     def _verts_from_bs(self, expr, gpose, jaw, eyelids):
         """Helper to get vertices from blendshape parameters"""
         B   = expr.shape[0]
-        shp = torch.zeros(B, 300, device=self.device)
-        eye = matrix_to_euler_angles(torch.eye(3)[None], "XYZ").to(self.device)
+        shp = self.shp.expand(B, -1)
+        eye = self.eye
         eyes = torch.cat([eye.squeeze(), eye.squeeze()], 0).expand(B, -1)
         pose = torch.cat([gpose, jaw], -1)
         v, _ = FLAME_MODEL(shape_params=shp, expression_params=expr, pose_params=pose, eye_pose_params=eyes)
         return v.detach()
 
+    @torch.no_grad()
     def render(self, blendshapes: torch.Tensor):
         """
         Render blendshapes to image and put in queue
@@ -340,7 +374,7 @@ class OnlineRenderer:
         eyelids = bs[:, 56:]
 
         verts = self._verts_from_bs(expr, gpose, jaw, eyelids)
-        cam   = torch.tensor([5, 0, 0], dtype=torch.float32, device=self.device).expand(expr.size(0), -1)
+        cam   = self.cam.expand(expr.size(0), -1)
         
         # Render
         rendered_dict = FACE_RENDERER(verts, cam)
@@ -403,9 +437,13 @@ class StreamingPipeline:
                     print("[Producer] Audio exhausted, flushing...")
                     audio = self.audio_buffer.get_audio()
                     all_features = self.feature_generator.generate(audio)
-                    if all_features is not None and all_features.shape[1] >= 3:
-                        final_features = all_features[:, -3:-1, :]
-                        self.feature_queue.put(final_features)
+                    if all_features is not None and all_features.shape[1] >= 6:
+                        final_features = all_features[:, -6:, :]
+                        # send in pairs
+                        for i in range(final_features.shape[1] // 2):
+                            inc = final_features[:, i*2 : i*2+2, :]
+                            self.feature_queue.put(inc)
+                        # self.feature_queue.put(final_features)
                     self.feature_queue.put(None)
                     break
 
@@ -415,9 +453,9 @@ class StreamingPipeline:
                     if self.audio_buffer.duration_ms() >= warmup_ms:
                         audio = self.audio_buffer.get_audio()
                         all_features = self.feature_generator.generate(audio)
-                        # Warmup: extract all but last 3
+                        # Warmup: extract all but last 6 frames
                         if all_features is not None:
-                            warmup_features = all_features[:, :-3, :]
+                            warmup_features = all_features[:, :-6, :]
                             # send in pairs
                             for i in range(warmup_features.shape[1] // 2):
                                 inc = warmup_features[:, i*2 : i*2+2, :]
@@ -429,8 +467,8 @@ class StreamingPipeline:
                     audio = self.audio_buffer.get_audio()
                     all_features = self.feature_generator.generate(audio)
                     if all_features is not None:
-                         # Incremental: last 5 to 3
-                         inc = all_features[:, -5:-3, :]
+                         # Incremental: last 8 to 6
+                         inc = all_features[:, -8:-6, :]
                          self.feature_queue.put(inc)
 
         except Exception as e:
@@ -496,6 +534,61 @@ def flat_yaml(path):
     raw = yaml.safe_load(open(path))
     return SimpleNamespace(**{k: v for sec in raw.values() if isinstance(sec, dict) for k, v in sec.items()})
 
+def save_frame_png(img: np.ndarray, path: str) -> None:
+    """
+    Save an RGB uint8 numpy image to disk.
+    """
+    try:
+        import imageio.v2 as imageio
+
+        imageio.imwrite(path, img)
+        return
+    except Exception:
+        pass
+
+    try:
+        from PIL import Image
+
+        Image.fromarray(img).save(path)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to save frame {path}: {exc}")
+
+
+def build_video_from_frames(
+    frames_dir: str,
+    audio_path: str,
+    fps: float,
+    output_path: str,
+) -> str:
+    """
+    Combine a directory of numbered PNG frames with an audio track into an MP4.
+    """
+    pattern = os.path.join(frames_dir, "%06d.png")
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-framerate",
+        str(fps),
+        "-i",
+        pattern,
+        "-i",
+        audio_path,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        output_path,
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    return output_path
+
+
 def main_gradio():
     # 1. Load Model (cached globally if possible, or loaded here)
     cfg = flat_yaml("config/joint_data/demo.yaml")
@@ -503,6 +596,8 @@ def main_gradio():
     ckpt = torch.load(cfg.model_path, map_location="cpu")
     load_state_dict(fasttalk_model, ckpt["state_dict"], strict=False)
     fasttalk_model.eval()
+    # fasttalk_model = torch.compile(fasttalk_model)
+    # fasttalk_model.transformer_decoder = torch.compile(fasttalk_model.transformer_decoder)
 
     # Load style list
     STYLE_DIR = "demo/styles"
@@ -512,14 +607,15 @@ def main_gradio():
 
     def init_pipeline(style_name):
         audio_source = LiveAudioSource(chunk_ms=40)
-        audio_buffer = AudioBuffer(chunk_ms=40, max_duration_ms=5000)
+        audio_buffer = AudioBuffer(chunk_ms=40)
         feature_generator = FeatureGenerator(device="cuda" if torch.cuda.is_available() else "cpu")
-
+        # feature_generator.audio_encoder = torch.compile(feature_generator.audio_encoder)
         style_fp = os.path.join(STYLE_DIR, style_name + ".npz")
         style_t = torch.load(style_fp, map_location=DEVICE)
 
         bs_model = BlendshapeModel(fasttalk_model, style_t)
-
+        #TODO refactor
+        feature_generator.audio_encoder = bs_model.model.audio_encoder
         image_queue = queue.Queue()
         renderer = OnlineRenderer(image_queue)
 
@@ -548,6 +644,7 @@ def main_gradio():
         if state['started'] is False:
             state["pipeline"].start_non_blocking()
             state['started'] = True
+            state['accumulated_audio'] = []
 
         # if state is None or state.get("style_name") != style_name:
         #     if state is not None:
@@ -556,6 +653,8 @@ def main_gradio():
 
         sr, samples = audio
         state["audio_source"].push_chunk(samples, sr)
+        state['accumulated_audio'].append(samples)
+        state['sample_rate'] = sr
 
         frame = None
         while True:
@@ -590,11 +689,13 @@ def main_gradio():
 
     def run_file_stream(audio_path, style_name):
         if not audio_path or style_name is None:
-            return None
+            yield None, None
+            return
 
         audio_source = FileAudioSource(audio_path, chunk_ms=40)
-        audio_buffer = AudioBuffer(chunk_ms=40, max_duration_ms=5000)
+        audio_buffer = AudioBuffer(chunk_ms=40)
         feature_generator = FeatureGenerator(device="cuda" if torch.cuda.is_available() else "cpu")
+        fps = 1000.0 / audio_source.chunk_ms
 
         style_fp = os.path.join(STYLE_DIR, style_name + ".npz")
         style_t = torch.load(style_fp, map_location=DEVICE)
@@ -608,20 +709,69 @@ def main_gradio():
             audio_source, audio_buffer, feature_generator, bs_model, renderer
         )
 
-        pipeline.start_non_blocking()
+        base_name = os.path.splitext(os.path.basename(audio_path))[0]
+        out_video_path = os.path.join(STREAM_OUT_DIR, f"{base_name}_stream_audio.mp4")
+        frames_in_memory = []
+        last_frame = None
+        frame_dir = None
 
-        while True:
-            try:
-                img = image_queue.get(timeout=1.0)
-                if img is None:
-                    break
-                yield img
-            except queue.Empty:
-                if not any(t.is_alive() for t in pipeline.threads):
-                    break
-                continue
+        try:
+            pipeline.start_non_blocking()
+            while True:
+                try:
+                    img = image_queue.get(timeout=1.0)
+                    if img is None:
+                        break
+                    last_frame = img
+                    frames_in_memory.append(img)
+                    yield img, None
+                except queue.Empty:
+                    if not any(t.is_alive() for t in pipeline.threads):
+                        break
+                    continue
 
-        pipeline.stop()
+            final_video = None
+            if frames_in_memory:
+                try:
+                    frame_dir = tempfile.mkdtemp(prefix="fasttalk_stream_frames_")
+                    for idx, frame in enumerate(frames_in_memory):
+                        frame_path = os.path.join(frame_dir, f"{idx:06d}.png")
+                        save_frame_png(frame, frame_path)
+                    final_video = build_video_from_frames(
+                        frames_dir=frame_dir,
+                        audio_path=audio_path,
+                        fps=fps,
+                        output_path=out_video_path,
+                    )
+                except Exception as exc:
+                    print(f"[File Stream] Failed to build video: {exc}")
+                finally:
+                    if frame_dir is not None:
+                        shutil.rmtree(frame_dir, ignore_errors=True)
+
+            yield last_frame, final_video
+        finally:
+            pipeline.stop()
+    
+
+    def process_audio_after_recording(state):
+        """Return the accumulated audio when recording stops"""
+        if state is None or 'accumulated_audio' not in state:
+            return None
+        
+        # Concatenate all chunks
+        full_audio = np.concatenate(state['accumulated_audio'])
+        sr = state.get('sample_rate', 16000)
+
+        # resample to 16000 if needed
+        if sr != 16000:
+            # convert to floa
+            full_audio = full_audio.astype(np.float32) / 32768.0
+            full_audio = librosa.resample(full_audio, orig_sr=sr, target_sr=16000)
+
+        return (16000, full_audio)
+
+
 
     with gr.Blocks(title="fasTTalk Live Streaming") as demo:
         gr.Markdown("### fasTTalk Live - Streaming Pipeline Demo")
@@ -644,6 +794,7 @@ def main_gradio():
                         )
                     with gr.Column():
                         out_image = gr.Image(label="Live Stream", streaming=True)
+                        audio_output = gr.Audio(label="Output")
 
                 init_button.click(
                     fn = apply_style,
@@ -661,6 +812,10 @@ def main_gradio():
                     stream_every=0.04, # 40ms
                     time_limit=60,
                 )
+                audio_in.stop_recording(
+                    fn=process_audio_after_recording,
+                    inputs=[state],
+                    outputs=[audio_output],)
 
             with gr.TabItem("File"):
                 with gr.Row():
@@ -675,11 +830,17 @@ def main_gradio():
 
                     with gr.Column():
                         out_image_file = gr.Image(label="File Stream", streaming=True)
+                        out_video_file = gr.Video(
+                            label="Rendered video (frames + audio)",
+                            format="mp4",
+                            interactive=False,
+                            height=240,
+                        )
 
                 btn.click(
                     run_file_stream,
                     inputs=[audio_file, style_dd_file],
-                    outputs=[out_image_file],
+                    outputs=[out_image_file, out_video_file],
                 )
 
     demo.launch(server_name="0.0.0.0")
