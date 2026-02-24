@@ -480,11 +480,11 @@ class CodeTalker(BaseModel):
         return blendshapes_out
 
     def predict_no_quantizer(self, audio, target_style=None):
-        audio = audio.squeeze(1)
+        audio = audio.squeeze(1) # [B, L] L:audio length
 
-        # Extract audio features using Wav2Vec2
-        hidden_states = self.audio_encoder(audio).last_hidden_state  # [B, T_audio, D]
-        hidden_states = self.audio_feature_map(hidden_states)
+        # Extract audio features using Wav2Vec2 T_audio = L/320
+        hidden_states = self.audio_encoder(audio).last_hidden_state  # [B, T_audio, D=768]
+        hidden_states = self.audio_feature_map(hidden_states) # [B, T_audio, feature_dim=1024]
 
         frame_num = hidden_states.shape[1]//2
 
@@ -512,11 +512,11 @@ class CodeTalker(BaseModel):
             memory_mask = enc_dec_mask(self.device, self.dataset, blendshapes_input.shape[1], hidden_states.shape[1])
 
             feat_out = self.transformer_decoder(
-                                                tgt=blendshapes_input,
-                                                memory=hidden_states,
-                                                tgt_mask=tgt_mask, 
-                                                memory_mask=memory_mask,
-                                                style   = style_vec,
+                                                tgt=blendshapes_input, # [B, T_tgt, feature_dim]
+                                                memory=hidden_states, # [B, T_audio, feature_dim]
+                                                tgt_mask=tgt_mask, #[T_tgt, T_tgt]
+                                                memory_mask=memory_mask, #[T_tgt, T_audio]
+                                                style   = style_vec, # [B, feature_dim]
                                                 )
 
             feat_out         = self.feat_map(feat_out) # Map the output features to the final feature space (VQAutoencoder 'embedding') 
