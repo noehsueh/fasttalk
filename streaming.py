@@ -171,11 +171,16 @@ class AudioBuffer:
         self.max_samples = int(sr * max_duration_ms / 1000)
         self.buffer = np.array([], dtype=np.float32)
 
-    def add_chunk(self, chunk: np.ndarray):
+    def add_chunk(self, chunk: np.ndarray) -> int:
+        """Append chunk and trim old audio if over max duration.
+        Returns the number of samples trimmed from the front."""
+        prev_len = len(self.buffer)
         self.buffer = np.concatenate([self.buffer, chunk])
+        trimmed = 0
         if len(self.buffer) > self.max_samples:
-            print(f"[AudioBuffer] Buffer exceeded max duration, trimming...")
+            trimmed = len(self.buffer) - self.max_samples
             self.buffer = self.buffer[-self.max_samples:]
+        return trimmed
 
     def get_audio(self) -> np.ndarray:
         return self.buffer.copy()
@@ -237,7 +242,7 @@ class BlendshapeModel:
 
         self.past_blendshapes = torch.zeros(1,1,1024).to(self.device)
         self.memory = None
-        self.max_blendshape_len = 600 # biased mask size
+        self.max_blendshape_len = 100 # keep inference fast; truncates at ~4s of context
 
     def _compute_style_vector(self):
         feat_q_gt, _, encoded = self.model.autoencoder.get_quant(self.style_t, torch.ones_like(self.style_t[...,0], dtype=torch.bool))
@@ -254,11 +259,11 @@ class BlendshapeModel:
         frames_to_remove = 100
         memory_frames_to_remove = frames_to_remove * 2
         if self.past_blendshapes.size(1) > self.max_blendshape_len:
-            print(f"[BlendshapeModel] Removing past context")
-            print(f'Before removing shapes size: {self.past_blendshapes.size()}, memory size: {self.memory.size()}')
+            # print(f"[BlendshapeModel] Removing past context")
+            # print(f'Before removing shapes size: {self.past_blendshapes.size()}, memory size: {self.memory.size()}')
             self.past_blendshapes = self.past_blendshapes[:, frames_to_remove:, :].detach()
             self.memory = self.memory[:, memory_frames_to_remove:, :].detach()
-            print(f'After removing shapes size: {self.past_blendshapes.size()}, memory size: {self.memory.size()}')
+            # print(f'After removing shapes size: {self.past_blendshapes.size()}, memory size: {self.memory.size()}')
 
     @torch.no_grad()
     def predict(self, features: torch.Tensor, debug: bool = False) -> torch.Tensor:
@@ -302,15 +307,18 @@ class BlendshapeModel:
 
         feat_out = self.model.feat_map(feat_out)
 
-        # decode to blendshapes
-        # first frame boostrap
+        # decode to blendshapes — only pass a small window to the
+        # autoencoder decoder since we only use the last frame's output.
+        # This avoids O(T²) cost over the full history.
+        AE_WINDOW = 8
         if is_first_frame:
             bs_out_q = self.model.autoencoder.decode(
                 torch.cat([feat_out, feat_out], dim=1)
             )
-            bs_out_q = bs_out_q[:, 0].unsqueeze(1)  
+            bs_out_q = bs_out_q[:, 0].unsqueeze(1)
         else:
-            bs_out_q = self.model.autoencoder.decode(feat_out)
+            feat_window = feat_out[:, -AE_WINDOW:, :]
+            bs_out_q = self.model.autoencoder.decode(feat_window)
         blendshapes = bs_out_q[:,-1,:]
 
         # update internal state
@@ -408,68 +416,104 @@ class StreamingPipeline:
         blendshape_model: BlendshapeModel,
         renderer: OnlineRenderer,
         queue_size: int = 500,
-        first_packet_latency_ms: int = 360, 
+        first_packet_latency_ms: int = 360,
+        lookahead_ms: int = 300, #0.3 sec approx 15 frames
     ):
         self.audio_source = audio_source
         self.audio_buffer = audio_buffer
         self.feature_generator = feature_generator
         self.blendshape_model = blendshape_model
         self.renderer = renderer
-        self.warmup = first_packet_latency_ms
+        self.warmup_ms = first_packet_latency_ms
+        self.lookahead_ms = lookahead_ms
 
-        self.feature_queue = queue.Queue(maxsize=queue_size)
-        self.blendshape_queue = queue.Queue(maxsize=queue_size)
-        
+        self.feature_queue = queue.Queue(maxsize=10)
+
         self.threads = []
         self.stop_event = threading.Event()
 
     def _producer_thread(self):
-        print("[Producer] Starting...")
-        warmup_ms = self.warmup
+        """
+        Producer thread with lookahead-based feature extraction.
+
+        Uses AudioBuffer with a sliding window so memory stays bounded during
+        long streams.  When old audio is trimmed from the front of the buffer,
+        `n_frames_sent` is adjusted so we never re-send or skip frames.
+        Each frame is only released after it has `lookahead_ms` of
+        right-context available in the buffer.
+        """
+        print("[Producer] Starting with lookahead-based feature extraction...")
+
+        # Config
+        sr = 16000
+        hop_size = 320  # after 400ms, wav2vec ad one additional frame per 320 samples
+        lookahead_frames = int(self.lookahead_ms / 1000 * sr / hop_size)
+
+        # State – n_frames_sent is relative to the *current* buffer start
+        n_frames_sent = 0
         is_warmed_up = False
 
         try:
             self.audio_source.start()
             while not self.stop_event.is_set():
                 chunk = self.audio_source.get_chunk()
+
                 if chunk is None:
-                    # Flush final frames
-                    print("[Producer] Audio exhausted, flushing...")
+                    # Flush: no more future audio, release all remaining frames
+                    print("[Producer] Audio exhausted, flushing remaining frames...")
                     audio = self.audio_buffer.get_audio()
-                    all_features = self.feature_generator.generate(audio)
-                    if all_features is not None and all_features.shape[1] >= 6:
-                        final_features = all_features[:, -6:, :]
-                        # send in pairs
-                        for i in range(final_features.shape[1] // 2):
-                            inc = final_features[:, i*2 : i*2+2, :]
-                            self.feature_queue.put(inc)
-                        # self.feature_queue.put(final_features)
+                    if len(audio) > 0:
+                        all_features = self.feature_generator.generate(audio)
+                        if all_features is not None and all_features.shape[1] > n_frames_sent:
+                            final_feats = all_features[:, n_frames_sent:, :]
+                            # send in pairs
+                            for i in range(final_feats.shape[1] // 2):
+                                inc = final_feats[:, i*2 : i*2+2, :]
+                                self.feature_queue.put(inc)
+                            # handle odd frame at the end
+                            if final_feats.shape[1] % 2 == 1:
+                                last_frame = final_feats[:, -1:, :]
+                                self.feature_queue.put(torch.cat([last_frame, last_frame], dim=1))
                     self.feature_queue.put(None)
                     break
 
-                self.audio_buffer.add_chunk(chunk)
+                # Add chunk to sliding-window buffer; adjust cursor if old
+                # audio was trimmed from the front
+                samples_trimmed = self.audio_buffer.add_chunk(chunk)
+                if samples_trimmed > 0:
+                    frames_trimmed = samples_trimmed // hop_size
+                    n_frames_sent = max(0, n_frames_sent - frames_trimmed)
 
                 if not is_warmed_up:
-                    if self.audio_buffer.duration_ms() >= warmup_ms:
+                    # Wait for warmup_ms + lookahead_ms of audio before starting
+                    if self.audio_buffer.duration_ms() >= self.warmup_ms + self.lookahead_ms:
                         audio = self.audio_buffer.get_audio()
                         all_features = self.feature_generator.generate(audio)
-                        # Warmup: extract all but last 6 frames
                         if all_features is not None:
-                            warmup_features = all_features[:, :-6, :]
-                            # send in pairs
-                            for i in range(warmup_features.shape[1] // 2):
-                                inc = warmup_features[:, i*2 : i*2+2, :]
-                                self.feature_queue.put(inc)
-                            is_warmed_up = True
-                            print(f"[Producer] Warmup done")
-
-                elif self.audio_buffer.duration_ms() >= warmup_ms + self.audio_buffer.chunk_ms:
+                            n_committed = all_features.shape[1] - lookahead_frames
+                            if n_committed > 0:
+                                warmup_feats = all_features[:, :n_committed, :]
+                                for i in range(warmup_feats.shape[1] // 2):
+                                    inc = warmup_feats[:, i*2 : i*2+2, :]
+                                    self.feature_queue.put(inc)
+                                n_frames_sent = (n_committed // 2) * 2
+                                is_warmed_up = True
+                                print(f"[Producer] Warmup done. Sent {n_frames_sent} frames, "
+                                      f"lookahead={lookahead_frames} frames ({self.lookahead_ms}ms)")
+                else:
+                    # Online mode: extract features and send newly committed frames
                     audio = self.audio_buffer.get_audio()
                     all_features = self.feature_generator.generate(audio)
                     if all_features is not None:
-                         # Incremental: last 8 to 6
-                         inc = all_features[:, -8:-6, :]
-                         self.feature_queue.put(inc)
+                        n_committed = all_features.shape[1] - lookahead_frames
+                        new_frames = n_committed - n_frames_sent
+                        if new_frames >= 2:
+                            n_pairs = new_frames // 2
+                            for i in range(n_pairs):
+                                idx = n_frames_sent + i * 2
+                                inc = all_features[:, idx : idx + 2, :]
+                                self.feature_queue.put(inc)
+                            n_frames_sent += n_pairs * 2
 
         except Exception as e:
             print(f"[Producer] Error: {e}")
@@ -477,40 +521,28 @@ class StreamingPipeline:
             traceback.print_exc()
             self.feature_queue.put(None)
 
-    def _inference_thread(self):
-        print("[Inference] Starting...")
-        # try:
-        while not self.stop_event.is_set():
-            features = self.feature_queue.get()
-            if features is None:
-                self.blendshape_queue.put(None)
-                break
-            blendshapes = self.blendshape_model.predict(features)
-            self.blendshape_queue.put(blendshapes)
-        # except Exception as e:
-        #     print(f"[Inference] Error: {e}")
-        #     self.blendshape_queue.put(None)
-
-    def _render_thread(self):
-        print("[Render] Starting...")
+    def _inference_render_thread(self):
+        """Fused inference + render: eliminates one queue hop and thread switch."""
+        print("[InferenceRender] Starting...")
         try:
             while not self.stop_event.is_set():
-                blendshapes = self.blendshape_queue.get()
-                if blendshapes is None:
-                    # signal end to renderer queue maybe?
+                features = self.feature_queue.get()
+                if features is None:
                     self.renderer.output_queue.put(None)
                     break
+                blendshapes = self.blendshape_model.predict(features)
                 self.renderer.render(blendshapes)
         except Exception as e:
-            print(f"[Render] Error: {e}")
+            print(f"[InferenceRender] Error: {e}")
+            import traceback
+            traceback.print_exc()
             self.renderer.output_queue.put(None)
 
     def start_non_blocking(self):
         """Start threads but don't join them"""
         self.threads = [
             threading.Thread(target=self._producer_thread, name="Producer"),
-            threading.Thread(target=self._inference_thread, name="Inference"),
-            threading.Thread(target=self._render_thread, name="Render")
+            threading.Thread(target=self._inference_render_thread, name="InferenceRender"),
         ]
         for t in self.threads:
             t.start()
@@ -607,7 +639,7 @@ def main_gradio():
 
     def init_pipeline(style_name):
         audio_source = LiveAudioSource(chunk_ms=40)
-        audio_buffer = AudioBuffer(chunk_ms=40)
+        audio_buffer = AudioBuffer(chunk_ms=40, max_duration_ms=1000)
         feature_generator = FeatureGenerator(device="cuda" if torch.cuda.is_available() else "cpu")
         # feature_generator.audio_encoder = torch.compile(feature_generator.audio_encoder)
         style_fp = os.path.join(STYLE_DIR, style_name + ".npz")
@@ -689,11 +721,11 @@ def main_gradio():
 
     def run_file_stream(audio_path, style_name):
         if not audio_path or style_name is None:
-            yield None, None
+            yield None, None, None
             return
 
         audio_source = FileAudioSource(audio_path, chunk_ms=40)
-        audio_buffer = AudioBuffer(chunk_ms=40)
+        audio_buffer = AudioBuffer(chunk_ms=40, max_duration_ms=1000)
         feature_generator = FeatureGenerator(device="cuda" if torch.cuda.is_available() else "cpu")
         fps = 1000.0 / audio_source.chunk_ms
 
@@ -701,6 +733,8 @@ def main_gradio():
         style_t = torch.load(style_fp, map_location=DEVICE)
 
         bs_model = BlendshapeModel(fasttalk_model, style_t)
+        # replace feature generator with finetuned weights
+        feature_generator.audio_encoder = bs_model.model.audio_encoder
 
         image_queue = queue.Queue()
         renderer = OnlineRenderer(image_queue)
@@ -711,32 +745,34 @@ def main_gradio():
 
         base_name = os.path.splitext(os.path.basename(audio_path))[0]
         out_video_path = os.path.join(STREAM_OUT_DIR, f"{base_name}_stream_audio.mp4")
-        frames_in_memory = []
         last_frame = None
-        frame_dir = None
+        frame_dir = tempfile.mkdtemp(prefix="fasttalk_stream_frames_")
+        frame_count = 0
 
         try:
             pipeline.start_non_blocking()
+            # First yield: start audio playback immediately
+            yield None, None, audio_path
+
             while True:
                 try:
                     img = image_queue.get(timeout=1.0)
                     if img is None:
                         break
                     last_frame = img
-                    frames_in_memory.append(img)
-                    yield img, None
+                    # Save frame to disk incrementally so the end is fast
+                    save_frame_png(img, os.path.join(frame_dir, f"{frame_count:06d}.png"))
+                    frame_count += 1
+                    yield img, None, gr.skip()
                 except queue.Empty:
                     if not any(t.is_alive() for t in pipeline.threads):
                         break
                     continue
 
+            # Frames already on disk — only ffmpeg left (fast)
             final_video = None
-            if frames_in_memory:
+            if frame_count > 0:
                 try:
-                    frame_dir = tempfile.mkdtemp(prefix="fasttalk_stream_frames_")
-                    for idx, frame in enumerate(frames_in_memory):
-                        frame_path = os.path.join(frame_dir, f"{idx:06d}.png")
-                        save_frame_png(frame, frame_path)
                     final_video = build_video_from_frames(
                         frames_dir=frame_dir,
                         audio_path=audio_path,
@@ -745,13 +781,12 @@ def main_gradio():
                     )
                 except Exception as exc:
                     print(f"[File Stream] Failed to build video: {exc}")
-                finally:
-                    if frame_dir is not None:
-                        shutil.rmtree(frame_dir, ignore_errors=True)
 
-            yield last_frame, final_video
+            yield last_frame, final_video, gr.skip()
         finally:
             pipeline.stop()
+            if frame_dir is not None:
+                shutil.rmtree(frame_dir, ignore_errors=True)
     
 
     def process_audio_after_recording(state):
@@ -830,6 +865,7 @@ def main_gradio():
 
                     with gr.Column():
                         out_image_file = gr.Image(label="File Stream", streaming=True)
+                        audio_playback = gr.Audio(label="Audio Playback", autoplay=True)
                         out_video_file = gr.Video(
                             label="Rendered video (frames + audio)",
                             format="mp4",
@@ -840,7 +876,7 @@ def main_gradio():
                 btn.click(
                     run_file_stream,
                     inputs=[audio_file, style_dd_file],
-                    outputs=[out_image_file, out_video_file],
+                    outputs=[out_image_file, out_video_file, audio_playback],
                 )
 
     demo.launch(server_name="0.0.0.0")
